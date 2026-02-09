@@ -1,79 +1,201 @@
-# M-SB-TUT-Stud-1
-This branch holds the code for running the video summary pipeline.
+# StudyBuzz
 
-There are may components in this codebase:
+**AI-Powered Lecture Video Chaptering & Summarization**
 
-# VLLM
-VLLM is used for running the large language model. 
-We are using [Qwen3-VL-235B](https://huggingface.co/Qwen/Qwen3-VL-235B-A22B-Thinking-FP8).
+StudyBuzz transforms hour-long lecture recordings into navigable, summarized content. Upload a video, get chapters and summaries—automatically.
 
-We use podman to run the VLLM server. We choose podman over a conventional local pip install to avoid dependency issues.
+---
 
-The command to run the VLLM server is as follows:
+## Features
 
+- **Automatic Transcription** — Whisper-powered speech-to-text with precise timestamps
+- **Smart Chapters** — AI detects topic transitions and generates meaningful segment markers
+- **AI Summaries** — Each chapter receives a concise 1-2 paragraph summary
+- **Interactive Player** — Click any chapter to jump directly to that section
+- **Supports Multiple Formats** — MP4, MKV, MOV, AVI, WEBM, MPEG (up to 2GB)
+
+---
+
+## Architecture
+```
+┌─────────────────────────────────────────────────────┐
+│         FRONTEND (React + Material-UI)              │
+│  - Video upload interface                           │
+│  - Processing status display                        │
+│  - Video player with chapters                       │
+│  - Summary panels                                   │
+└─────────────────────────────────────────────────────┘
+                        ↕ HTTP/REST API
+┌─────────────────────────────────────────────────────┐
+│          BACKEND (Flask + Python)                   │
+│  - REST API endpoints (/api/*)                      │
+│  - File management (uploads/output)                 │
+│  - Job orchestration                                │
+│  - Static file serving                              │
+└─────────────────────────────────────────────────────┘
+                        ↕ Subprocess calls
+┌─────────────────────────────────────────────────────┐
+│      PROCESSING PIPELINE (timeStampGen.py)          │
+│  - FFmpeg (audio/video manipulation)                │
+│  - Whisper-CLI (speech transcription)               │
+│  - Local LLM API (timestamp + summary generation)   │
+└─────────────────────────────────────────────────────┘
+```
+
+---
+
+## Pipeline Stages
+
+| Stage | Tool | Input | Output |
+|-------|------|-------|--------|
+| 1. Audio Extraction | FFmpeg | `video.mp4` | `video.wav` |
+| 2. Speech Transcription | Whisper.cpp | `video.wav` | `video.wav.vtt` |
+| 3. Chapter Generation | Qwen3-VL | transcript | `video_timestamps.txt` |
+| 4. Video Segmentation | FFmpeg | video + timestamps | `clip_01.mp4`, `clip_02.mp4`... |
+| 5. Transcript Segmentation | Python | VTT + timestamps | `chapter_01.vtt`, `chapter_02.vtt`... |
+| 6. Chapter Summarization | Qwen3-VL (multimodal) | clips + transcripts | `video_summary.json` |
+
+---
+
+## Prerequisites
+
+### System Dependencies
+
+- **Python 3.10+**
+- **Node.js 18+** and npm
+- **FFmpeg** — must be on system PATH
+- **Whisper.cpp** — compiled with GPU support (`whisper-cli` binary on PATH)
+- **Podman** — for running vLLM container
+
+### Models
+
+- **Whisper**: `ggml-large-v3-turbo.bin`
+- **LLM**: `Qwen/Qwen3-VL-235B-A22B-Thinking-FP8` (served via vLLM)
+
+---
+
+## Installation
+
+### 1. Clone the Repository
 ```bash
-podman run --device nvidia.com/gpu=all \
- -v ~/M-SB-TUT-Stud-1/huggingface:/root/.cache/huggingface \
- -v $(pwd)/video:/root/video \
- -p 8000:8000 \
- --ipc=host \
- docker.io/vllm/vllm-openai:latest \
- -e VLLM_USE_DEEP_GEMM=0 \
- --model Qwen/Qwen3-VL-235B-A22B-Thinking-FP8 \
- --served-model-name Qwen3-VL \
- --enable-expert-parallel \
- --swap-space 16 \
- --max-num-seqs 512 \
- --gpu-memory-utilization 0.9 \
- --tensor-parallel-size 8 \
- --allowed-local-media-path /root/video \
- --trust-remote-code \
- --host 0.0.0.0 \
- --port 8000
- ```
+git clone https://github.gatech.edu/OLIVES-VIP-VP4-AIMN/M-SB-TUT-Stud-1.git
+```
 
-The VLLM server will be accessible at `http://localhost:8000`. It takes 20 minutes to start up. 
-There are a few important flags to note:
-- `--allowed-local-media-path /root/video`: This flag allows the model to access images and videos from the specified path. 
-- `-v $(pwd)/video:/root/video`: This mounts the local `video` directory to the container's `/root/video` directory.
-- `--tensor-parallel-size 8`: This flag sets the tensor parallelism size, we use 8 H200 GPUs.
-- `-v ~/M-SB-TUT-Stud-1/huggingface:/root/.cache/huggingface`: This mounts the local huggingface cache to the container to avoid re-downloading the model. Change the path as necessary.
-
-The command must be run in the output directory (create it if it does not exist) where the `timeStampGen.py` script will output the intermediate files. There must also be a video directory in the output directory where the input video is stored.
-
-# Video Summary Pipeline
-The main code for the video summary pipeline is in `timeStampGen.py`. This script takes a video file as input and outputs a text summary of the video. It uses the VLLM server to run the Qwen3-VL model for video understanding. The VLLM server must be running before executing this script.
-
-This script also requires a few other dependencies. 
-
-## FFmpeg
-FFmpeg is used for video processing. A binary must be on the system PATH for the script to work. 
-
-## whisper.cpp
-[whisper.cpp](https://github.com/ggml-org/whisper.cpp) is used for audio transcription. It is a C++ implementation of the Whisper model. The binary must also be on the system PATH. The binary the script uses is `whisper-cli`. It must be compiled with GPU support for reasonable performance. The model we used can be found in this repository: `ggml-large-v3-turbo.bin`.
-
-There is sometimes a problem compiling this on the cluster, changing `-march=native` to `-march=x86-64-v3` in `whisper.cpp/ggml/src/ggml-cpu/CMakeLists.txt` helps at times.
-
-## Python Dependencies
-We recommend creating a virtual environment for the python dependencies. The dependencies can be installed using the `requirements.txt` file in this directory:
-
+### 2. Backend Setup
 ```bash
+# Create virtual environment
 python3 -m venv venv
 source venv/bin/activate
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-Run:
+### 3. Frontend Setup
 ```bash
-timeStampGen.py --help
-``` 
-to see the usage of the script. The main arguments are:
-```
-usage: timeStampGen.py [-h] [-d INPUT_DIR] [-o OUTPUT_DIR] [input_file]
-timeStampGen.py: error: Either provide an input_file or --input-dir with video files to process.
+cd frontend/video-summarizer-ui
+npm install
+npm run build
+cd ../..
 ```
 
-A sample command to run the script is as follows:
+### 4. Start vLLM Server
+
+Run from the `output` directory (create if it doesn't exist). Ensure a `video/` subdirectory exists for clip storage.
 ```bash
-python timeStampGen.py lecture.mp4
+mkdir -p output/video
+cd output
+
+podman run --device nvidia.com/gpu=all \
+  -v ~/studybuzz/huggingface:/root/.cache/huggingface \
+  -v $(pwd)/video:/root/video \
+  -p 8000:8000 \
+  --ipc=host \
+  docker.io/vllm/vllm-openai:latest \
+  --model Qwen/Qwen3-VL-235B-A22B-Thinking-FP8 \
+  --served-model-name Qwen3-VL \
+  --enable-expert-parallel \
+  --swap-space 16 \
+  --max-num-seqs 512 \
+  --gpu-memory-utilization 0.9 \
+  --tensor-parallel-size 8 \
+  --allowed-local-media-path /root/video \
+  --trust-remote-code \
+  --host 0.0.0.0 \
+  --port 8000
 ```
+
+> **Note**: vLLM takes ~20 minutes to load the model. Wait for the server to be ready before processing videos.
+
+### 5. Start the Application
+```bash
+python app.py
+```
+
+The application will be available at `https://ondemand-ice.pace.gatech.edu/node/{YourHostHere}/5000/`.
+
+---
+
+### Command Line (Pipeline Only)
+```bash
+python timeStampGen.py <video_file> -o <output_directory>
+
+# Example
+python timeStampGen.py lecture.mp4 -o output
+```
+
+#### CLI Options
+```
+usage: timeStampGen.py [-h] [-d INPUT_DIR] [-o OUTPUT_DIR] [input_file]
+
+positional arguments:
+  input_file            Path to video file
+
+optional arguments:
+  -h, --help            Show help message
+  -d, --input-dir       Process all videos in directory
+  -o, --output-dir      Output directory (default: ./output)
+```
+
+---
+
+## Project Structure
+```
+studybuzz/
+├── app.py                      # Flask backend server
+├── timeStampGen.py             # Main processing pipeline
+├── requirements.txt            # Python dependencies
+│
+├── frontend/
+│   └── video-summarizer-ui/
+│       ├── src/
+│       │   ├── App.js          # Main React component
+│       │   ├── api.js          # API client
+│       │   └── components/
+│       │       ├── VideoUploader.js
+│       │       ├── ProcessingStatus.js
+│       │       ├── VideoPlayer.js
+│       │       ├── ChapterMarkers.js
+│       │       └── SummaryPanel.js
+│       ├── package.json
+│       └── build/              # Production build (generated)
+│
+├── uploads/                    # Uploaded video files
+│
+└── output/                     # Generated artifacts
+```
+
+## Troubleshooting
+
+### Chapters are inaccurate
+
+- Ensure vLLM server is fully loaded before processing
+- Check that video clips are being written to the mounted `video/` directory
+- Verify the `--allowed-local-media-path` flag is set correctly
+
+
+## Acknowledgments
+
+- [Whisper.cpp](https://github.com/ggerganov/whisper.cpp)
+- [vLLM](https://github.com/vllm-project/vllm)
+- Georgia Tech AI Makerspace (https://coe.gatech.edu/academics/ai-for-engineering/ai-makerspace)

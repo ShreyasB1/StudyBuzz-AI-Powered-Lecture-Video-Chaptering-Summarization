@@ -686,7 +686,7 @@ def summarize_clips_with_llm(
     chapter_transcripts_dir: str,
     output_json_path: str,
     api_url: str = "http://localhost:8000/v1/chat/completions",
-    model_name: str = "Qwen3-VL",
+    model_name: str = "Qwen-Vision",
     container_video_root: str = "/root/video",
 ) -> bool:
     """
@@ -947,7 +947,7 @@ def generate_timestamps_with_llm(
 
     # 2. Set up the API request details.
     api_url = "http://localhost:8000/v1/chat/completions"
-    model_name = "Qwen3-VL"
+    model_name = "Qwen-Vision"
     system_prompt = "You are a helpful assistant that analyzes video transcripts and generates chapter timestamps in the format 'HH:MM:SS - Chapter Title'."
     user_prompt = f"""
 Based on the following video transcript, please generate a list of key topics or chapters with timestamps.
