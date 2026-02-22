@@ -3,23 +3,50 @@ import asyncio
 import json
 import statistics
 import time
+import base64
+from io import BytesIO
 from collections import Counter
 from typing import List, Tuple, Optional
 
 import httpx
+from PIL import Image
 
 # Default configuration
 DEFAULT_API_URL = "http://localhost:8000/v1/chat/completions"
 DEFAULT_MODEL = "mistral-large"
-DEFAULT_REQUESTS = 100
+DEFAULT_REQUESTS = 20
 DEFAULT_CONCURRENCY = 10
+DEFAULT_IMAGES = 32
+DEFAULT_TEXT_LENGTH = 40000
 
-# Default prompt
-DEFAULT_PROMPT = (
-    "A dead cat is placed into a box along with a nuclear isotope, a vial of poison and a radiation detector. "
-    "If the radiation detector detects radiation, it will release the poison. The box is opened one day later. "
-    "What is the probability of the cat being alive?"
-)
+def generate_multimodal_payload(model_name: str, num_images: int, text_length: int) -> dict:
+    """Generates a massive payload with N 720p images and a long text prompt."""
+    print(f"Generating payload: {num_images}x 720p images + ~{text_length} text tokens...")
+    
+    # 1. Generate a dummy 720p (1280x720) image in memory
+    img = Image.new('RGB', (1280, 720), color=(70, 130, 180)) # Steel blue
+    buffered = BytesIO()
+    img.save(buffered, format="JPEG")
+    img_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+    img_url = f"data:image/jpeg;base64,{img_b64}"
+
+    # 2. Build the massive text block (approx 1 token per word for standard English)
+    heavy_text = "Analyze this dataset closely. " * (text_length // 4)
+    
+    # 3. Construct the OpenAI-compatible multimodal content array
+    content = [{"type": "text", "text": heavy_text}]
+    for _ in range(num_images):
+        content.append({
+            "type": "image_url", 
+            "image_url": {"url": img_url}
+        })
+
+    return {
+        "model": model_name,
+        "messages": [{"role": "user", "content": content}],
+        "max_tokens": 128, # We just want to test prefill, not generate a massive essay
+        "temperature": 0.2
+    }
 
 
 async def send_request(
@@ -30,12 +57,12 @@ async def send_request(
 ) -> Tuple[Optional[float], Optional[int], Optional[int]]:
     """
     Sends a single request and returns (latency, total_tokens, status_code).
-    Returns (None, None, status_code) on error.
     """
     async with semaphore:
         start_time = time.perf_counter()
         try:
-            response = await client.post(url, json=payload, timeout=60.0)
+            # CRITICAL FIX: timeout=None. We must wait patiently in the vLLM queue.
+            response = await client.post(url, json=payload, timeout=None)
             end_time = time.perf_counter()
             latency = end_time - start_time
 
@@ -45,47 +72,47 @@ async def send_request(
                     total_tokens = response_data["usage"]["total_tokens"]
                     return latency, total_tokens, 200
                 except (KeyError, json.JSONDecodeError):
-                    return latency, 0, 200  # Response ok but format unexpected
+                    return latency, 0, 200  
             else:
+                print(f"Request failed with status {response.status_code}: {response.text[:200]}")
                 return None, None, response.status_code
 
-        except httpx.RequestError:
-            return None, None, 0  # 0 indicates connection error
+        except httpx.RequestError as e:
+            print(f"Connection error: {e}")
+            return None, None, 0
 
 
 async def main():
-    parser = argparse.ArgumentParser(description="Benchmark an OpenAI-compatible LLM API.")
+    parser = argparse.ArgumentParser(description="Benchmark massive multimodal workloads on vLLM.")
     parser.add_argument("--url", default=DEFAULT_API_URL, help="API endpoint URL")
     parser.add_argument("--model", default=DEFAULT_MODEL, help="Model name")
     parser.add_argument("--requests", type=int, default=DEFAULT_REQUESTS, help="Total number of requests")
     parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY, help="Number of concurrent requests")
-    parser.add_argument("--prompt", default=DEFAULT_PROMPT, help="Prompt content to send")
+    parser.add_argument("--num-images", type=int, default=DEFAULT_IMAGES, help="Number of 720p images per prompt")
+    parser.add_argument("--text-length", type=int, default=DEFAULT_TEXT_LENGTH, help="Approximate text tokens per prompt")
     
     args = parser.parse_args()
 
-    print(f"Starting benchmark:")
+    print(f"--- Starting Heavy Multimodal Benchmark ---")
     print(f"  URL: {args.url}")
     print(f"  Model: {args.model}")
-    print(f"  Requests: {args.requests}")
-    print(f"  Concurrency: {args.concurrency}")
-    print("-" * 30)
+    print(f"  Requests: {args.requests} (Concurrency: {args.concurrency})")
+    print("-" * 40)
 
-    # Prepare payload
-    payload = {
-        "model": args.model,
-        "messages": [{"role": "user", "content": args.prompt}],
-    }
+    # Prepare massive payload
+    payload = generate_multimodal_payload(args.model, args.num_images, args.text_length)
 
-    # High concurrency requires disabled limits
+    # High concurrency requires disabled limits & generous timeouts
     limits = httpx.Limits(max_keepalive_connections=None, max_connections=None)
+    timeout = httpx.Timeout(None) 
     
     semaphore = asyncio.Semaphore(args.concurrency)
     
-    async with httpx.AsyncClient(limits=limits) as client:
+    async with httpx.AsyncClient(limits=limits, timeout=timeout) as client:
         start_time = time.perf_counter()
         tasks = [send_request(client, args.url, payload, semaphore) for _ in range(args.requests)]
         
-        # Using as_completed would allow progress bar, but gather is simpler for now
+        print(f"Firing {args.requests} massive payloads at the server. Monitoring VRAM is highly recommended...")
         results = await asyncio.gather(*tasks)
         total_time = time.perf_counter() - start_time
 
@@ -112,7 +139,6 @@ async def main():
         avg_latency = statistics.mean(latencies)
         p50 = statistics.median(latencies)
         p95 = statistics.quantiles(latencies, n=20)[18] if len(latencies) >= 20 else p50
-        p99 = statistics.quantiles(latencies, n=100)[98] if len(latencies) >= 100 else p95
         
         rps = successful_requests / total_time
         tokens_per_sec = sum(tokens) / total_time
@@ -121,13 +147,10 @@ async def main():
         print(f"  Average: {avg_latency:.4f} s")
         print(f"  Median (P50): {p50:.4f} s")
         print(f"  P95: {p95:.4f} s")
-        print(f"  P99: {p99:.4f} s")
         
         print(f"\nThroughput:")
         print(f"  Requests/sec: {rps:.2f}")
         print(f"  Tokens/sec: {tokens_per_sec:.2f}")
-    else:
-        print("\nNo successful requests. Check your server URL and model name.")
 
 if __name__ == "__main__":
     asyncio.run(main())
