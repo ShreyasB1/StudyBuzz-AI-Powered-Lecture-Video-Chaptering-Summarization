@@ -98,17 +98,18 @@ def split_video(
         return False
 
 
-def convert_video_to_wav(video_path: str, output_path: str) -> bool:
+def convert_video_to_mp3(video_path: str, output_path: str) -> bool:
     """
-    Converts a video file to a WAV audio file using ffmpeg.
+    Converts a video file to an MP3 audio file using ffmpeg.
 
     This function executes an ffmpeg command to extract the audio stream from a
-    given video file and saves it as an uncompressed WAV file. It assumes that
-    ffmpeg is installed and accessible in the system's PATH.
+    given video file and saves it as a heavily compressed MP3 file to adhere
+    to Whisper size limits. It assumes that ffmpeg is installed and accessible 
+    in the system's PATH.
 
     Args:
         video_path: The absolute or relative path to the input video file.
-        output_path: The absolute or relative path where the output .wav file
+        output_path: The absolute or relative path where the output .mp3 file
                      will be saved. The directory will be created if it
                      doesn't exist.
 
@@ -132,10 +133,12 @@ def convert_video_to_wav(video_path: str, output_path: str) -> bool:
         video_path,
         "-vn",
         "-acodec",
-        "pcm_s16le",
+        "libmp3lame",
         "-ar",
-        "44100",
+        "16000",
         "-ac",
+        "1",
+        "-q:a",
         "2",
         "-y",
         output_path,
@@ -172,21 +175,21 @@ def format_timestamp(seconds: float) -> str:
     
     return f"{hours:02}:{minutes:02}:{secs:02}.{millis:03}"
 
-def transcribe_audio_with_whisper(wav_path: str, output_txt_path: str) -> bool:
+def transcribe_audio_with_whisper(mp3_path: str, output_txt_path: str) -> bool:
     """
-    Transcribes a WAV audio file to text using VLLM Whisper API.
+    Transcribes an MP3 audio file to text using VLLM Whisper API.
 
     Args:
-        wav_path: The absolute or relative path to the input .wav file.
+        mp3_path: The absolute or relative path to the input .mp3 file.
         output_txt_path: The absolute or relative path where the output .txt
                          transcript will be saved.
 
     Returns:
         True if the transcription was successful, False otherwise.
     """
-    # 1. Input Validation: Check if the source WAV file exists.
-    if not os.path.exists(wav_path):
-        print(f"Error: Input WAV file not found at '{wav_path}'")
+    # 1. Input Validation: Check if the source MP3 file exists.
+    if not os.path.exists(mp3_path):
+        print(f"Error: Input MP3 file not found at '{mp3_path}'")
         return False
 
     # 2. Prepare Output Directory and Path
@@ -194,7 +197,7 @@ def transcribe_audio_with_whisper(wav_path: str, output_txt_path: str) -> bool:
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
 
-    output_txt_path = wav_path + ".vtt"
+    output_txt_path = mp3_path + ".vtt"
     host_ip = "localhost"
     port = "8001"
     model_name = "whisper"
@@ -209,10 +212,10 @@ def transcribe_audio_with_whisper(wav_path: str, output_txt_path: str) -> bool:
         
     client = OpenAI(base_url=base_url, api_key="EMPTY")
 
-    print(f"Transcribing '{wav_path}' to '{output_txt_path}' using {base_url}...")
+    print(f"Transcribing '{mp3_path}' to '{output_txt_path}' using {base_url}...")
 
     try:
-        with open(wav_path, "rb") as audio_file:
+        with open(mp3_path, "rb") as audio_file:
             transcription = client.audio.transcriptions.create(
                 model=model_name,
                 file=audio_file,
@@ -1183,8 +1186,8 @@ def main():
     # Helper to run the pipeline for one video file
     def process_video(video_path: str) -> None:
         base_name = os.path.splitext(os.path.basename(video_path))[0]
-        out_audio = os.path.join(output_dir, f"{base_name}.wav")
-        out_transcript = os.path.join(output_dir, f"{base_name}.wav.vtt")
+        out_audio = os.path.join(output_dir, f"{base_name}.mp3")
+        out_transcript = os.path.join(output_dir, f"{base_name}.mp3.vtt")
         out_timestamps = os.path.join(output_dir, f"{base_name}_timestamps.txt")
         chapter_dir = os.path.join(output_dir, f"{base_name}_chapters")
         clips_dir = os.path.join(output_dir, "video")
@@ -1204,15 +1207,15 @@ def main():
             )
             if not os.path.exists(out_audio):
                 print(
-                    f"Note: WAV file '{out_audio}' is missing. Continuing with existing transcript."
+                    f"Note: MP3 file '{out_audio}' is missing. Continuing with existing transcript."
                 )
         else:
             if os.path.exists(out_audio):
-                print(f"Existing WAV found at '{out_audio}'. Skipping conversion.")
+                print(f"Existing MP3 found at '{out_audio}'. Skipping conversion.")
             else:
                 print("-" * 20)
-                if not convert_video_to_wav(video_path, out_audio):
-                    print("Pipeline stopped at video-to-WAV conversion.")
+                if not convert_video_to_mp3(video_path, out_audio):
+                    print("Pipeline stopped at video-to-MP3 conversion.")
                     return
 
             print("-" * 20)
