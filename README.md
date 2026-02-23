@@ -185,6 +185,105 @@ studybuzz/
 └── output/                     # Generated artifacts
 ```
 
+## Deploying on PACE Sandbox (Open OnDemand)
+
+StudyBuzz can be deployed as an interactive app on Georgia Tech's PACE Sandbox through Open OnDemand. This containerizes the application and makes it launchable from a web dashboard with automatic GPU allocation.
+
+### Prerequisites
+
+- SSH access to PACE (`login-ice.pace.gatech.edu`)
+- Podman available on the cluster (pre-installed on PACE)
+- The Qwen3-VL model weights cached on shared storage (e.g., `/storage/ice-shared/vip-vp4/huggingface`)
+- A `whisper-cli` binary and `ggml-large-v3-turbo.bin` model on shared storage (e.g., `/storage/ice-shared/vip-vp4/whisper`)
+
+### Step 1: Clone into the OnDemand dev directory
+
+Open OnDemand discovers apps placed in `~/ondemand/dev/`. Clone or copy the repository there:
+
+```bash
+ssh <your-gt-username>@login-ice.pace.gatech.edu
+
+mkdir -p ~/ondemand/dev
+git clone https://github.gatech.edu/OLIVES-VIP-VP4-AIMN/M-SB-TUT-Stud-1.git ~/ondemand/dev/studybuzz
+```
+
+### Step 2: Pre-build container images
+
+From inside the app directory, run the install script to build the StudyBuzz Docker image and pull the vLLM image. This caches the images so job startup is faster.
+
+```bash
+cd ~/ondemand/dev/studybuzz
+bash install.sh
+```
+
+> **Note:** The first build takes several minutes (npm install + Python deps). Subsequent builds use cached layers and are much faster.
+
+### Step 3: Launch from Open OnDemand
+
+1. Open **https://ondemand-ice.pace.gatech.edu** in your browser
+2. Navigate to **Develop** (top menu) and find **StudyBuzz** (apps in `~/ondemand/dev/` appear here)
+3. Fill out the launch form:
+   - **HuggingFace Model Cache Path** — directory containing the Qwen3-VL model weights
+   - **Whisper Tools Path** — directory containing `whisper-cli` and `ggml-large-v3-turbo.bin`
+   - **Node Type** — select **H200 HGX** (recommended) or **H100 HGX**
+   - **GPUs** — set to **8** for the full Qwen3-VL-235B model with tensor parallelism
+   - **Cores** — 8 recommended
+   - **Memory Per Core** — 16 GB recommended
+   - Set your desired **job duration**
+4. Click **Launch**
+
+### Step 4: Connect
+
+Once the SLURM job starts and containers are ready, a **Connect to StudyBuzz** button appears. Click it to open the web UI.
+
+> **Startup time:** vLLM takes approximately 20 minutes to load the Qwen3-VL-235B model. The web interface is accessible immediately, but video processing will not work until the model finishes loading.
+
+### How it works
+
+```
+Open OnDemand Dashboard
+    │
+    ▼ (SLURM job submission)
+Compute Node (H200 HGX, 8 GPUs)
+    │
+    ├── Podman Pod (shared localhost network)
+    │     ├── studybuzz-app container    ← Flask + React + FFmpeg (port 5000)
+    │     └── vllm container            ← Qwen3-VL-235B-FP8 (port 8000)
+    │
+    ▼
+User accesses: https://ondemand-ice.pace.gatech.edu/node/<host>/5000/
+```
+
+The deployment is managed by these files:
+
+| File | Purpose |
+|------|---------|
+| `Dockerfile` | Builds the StudyBuzz app image (React build + Python/Flask + FFmpeg) |
+| `manifest.yml` | Registers the app with Open OnDemand |
+| `form.yml.erb` | Defines the launch form (GPU count, paths, resources) |
+| `submit.yml.erb` | Configures SLURM job parameters |
+| `view.html.erb` | Renders the "Connect" button in the dashboard |
+| `template/before.sh.erb` | Allocates ports and exports environment variables |
+| `template/script.sh.erb` | Main script: creates Podman pod, starts vLLM and app containers |
+| `template/after.sh` | Waits for the app to become responsive |
+| `template/clean.sh` | Cleans up containers when the job ends |
+| `Makefile` | Helper targets for manual container management |
+| `install.sh` | One-time image pre-build script |
+
+### Updating the deployed app
+
+After making code changes, push to GitHub and pull on PACE:
+
+```bash
+cd ~/ondemand/dev/studybuzz
+git pull
+bash install.sh   # rebuild the Docker image with your changes
+```
+
+Then launch a new session from the OnDemand dashboard.
+
+---
+
 ## Troubleshooting
 
 ### Chapters are inaccurate
@@ -192,6 +291,20 @@ studybuzz/
 - Ensure vLLM server is fully loaded before processing
 - Check that video clips are being written to the mounted `video/` directory
 - Verify the `--allowed-local-media-path` flag is set correctly
+
+### Podman build fails with `setgroups` or `seteuid` errors
+
+This happens on PACE because rootless Podman does not have subuid/subgid ranges configured for your user. The Dockerfile already works around this by passing `-o APT::Sandbox::User=root` to apt-get. If you see this error on a new Dockerfile, add the same flag to your `apt-get` commands.
+
+### `npm ci` fails with "package-lock.json out of sync"
+
+The Dockerfile uses `npm install` instead of `npm ci` to handle lock file mismatches. If you update `package.json`, delete `package-lock.json` or run `npm install` locally to regenerate it.
+
+### vLLM container exits immediately
+
+- Check logs: `podman logs vllm-<SLURM_JOB_ID>`
+- Verify the HuggingFace cache path contains the model weights
+- Ensure you requested enough GPUs (8 for tensor-parallel-size 8)
 
 
 ## Acknowledgments
