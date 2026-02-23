@@ -6,7 +6,7 @@ import glob
 import re
 import base64
 import shutil
-import cv2
+import tempfile
 from typing import Optional
 from urllib import request, error
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -158,14 +158,23 @@ def convert_video_to_wav(video_path: str, output_path: str) -> bool:
         return False
 
 
+def format_timestamp(seconds: float) -> str:
+    """
+    Converts seconds (float) to WebVTT format (HH:MM:SS.mmm).
+    """
+    if seconds is None:
+        return "00:00:00.000"
+    
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    millis = int((seconds - int(seconds)) * 1000)
+    
+    return f"{hours:02}:{minutes:02}:{secs:02}.{millis:03}"
+
 def transcribe_audio_with_whisper(wav_path: str, output_txt_path: str) -> bool:
     """
-    Transcribes a WAV audio file to text using whisper-cli.
-
-    This function executes a whisper-cli command to transcribe the audio from a
-    given WAV file and saves the output to a text file. It assumes that
-    whisper-cli is installed and accessible in the system's PATH and that the
-    specified model file is in the same directory as this script.
+    Transcribes a WAV audio file to text using VLLM Whisper API.
 
     Args:
         wav_path: The absolute or relative path to the input .wav file.
@@ -180,52 +189,71 @@ def transcribe_audio_with_whisper(wav_path: str, output_txt_path: str) -> bool:
         print(f"Error: Input WAV file not found at '{wav_path}'")
         return False
 
-    # 2. Model Path: Locate the Whisper model file.
-    model_name = "ggml-large-v3-turbo.bin"
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    model_path = os.path.join(script_dir, model_name)
-
-    if not os.path.exists(model_path):
-        print(f"Error: Whisper model not found at '{model_path}'")
-        print("Please ensure the model file is in the same directory as the script.")
-        return False
-
-    # 3. Prepare Output Directory and Path
+    # 2. Prepare Output Directory and Path
     output_dir = os.path.dirname(output_txt_path)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
 
-    output_filename_base = os.path.splitext(output_txt_path)[0]
-
-    # 4. Construct the whisper-cli command.
-    command = [
-        "whisper-cli",
-        "-f",
-        wav_path,
-        "-m",
-        model_path,
-        "-ovtt",
-        # "-of",
-        # output_filename_base,
-    ]
-
-    # 5. Execute the command.
     output_txt_path = wav_path + ".vtt"
-    print(f"Transcribing '{wav_path}' to '{output_txt_path}'...")
+    host_ip = "localhost"
+    port = "8001"
+    model_name = "whisper"
+    language = "en"
+
+    base_url = f"http://{host_ip}:{port}/v1"
     try:
-        result = subprocess.run(
-            command, check=True, capture_output=True, text=True, encoding="utf-8"
-        )
+        from openai import OpenAI
+    except ImportError:
+        print("Error: openai package is not installed. Please install it using 'pip install openai'")
+        return False
+        
+    client = OpenAI(base_url=base_url, api_key="EMPTY")
+
+    print(f"Transcribing '{wav_path}' to '{output_txt_path}' using {base_url}...")
+
+    try:
+        with open(wav_path, "rb") as audio_file:
+            transcription = client.audio.transcriptions.create(
+                model=model_name,
+                file=audio_file,
+                response_format="verbose_json",
+                timestamp_granularities=["segment"],
+                language=language
+            )
+
+        with open(output_txt_path, "w", encoding="utf-8") as f:
+            f.write("WEBVTT\n\n")
+
+            if hasattr(transcription, 'segments') and transcription.segments:
+                for segment in transcription.segments:
+                    start = getattr(segment, 'start', 0.0)
+                    end = getattr(segment, 'end', 0.0)
+                    text = getattr(segment, 'text', "")
+                    
+                    vtt_start = format_timestamp(start)
+                    vtt_end = format_timestamp(end)
+                    
+                    f.write(f"{vtt_start} --> {vtt_end}\n")
+                    f.write(f"{text.strip()}\n\n")
+            elif isinstance(transcription, dict) and 'segments' in transcription:
+                for segment in transcription['segments']:
+                    start = segment.get('start', 0.0)
+                    end = segment.get('end', 0.0)
+                    text = segment.get('text', "")
+                    
+                    vtt_start = format_timestamp(start)
+                    vtt_end = format_timestamp(end)
+                    
+                    f.write(f"{vtt_start} --> {vtt_end}\n")
+                    f.write(f"{text.strip()}\n\n")
+            else:
+                print("Warning: Response did not contain segments.")
+                
         print("Transcription successful!")
         return True
-    except FileNotFoundError:
-        print("Error: 'whisper-cli' command not found.")
-        print("Please ensure whisper-cli is installed and in your system's PATH.")
-        return False
-    except subprocess.CalledProcessError as e:
-        print("Error during transcription.")
-        print(f"whisper-cli returned non-zero exit status: {e.returncode}")
-        print("whisper-cli stderr:", e.stderr)
+
+    except Exception as e:
+        print(f"Error during transcription: {e}")
         return False
 
 
@@ -457,41 +485,41 @@ def _extract_plain_text_from_vtt(content: str) -> str:
 
 
 def _encode_video_frames(
-    video_path: str, frames_per_second_to_capture: int = 1
+    video_path: str, output_dir: str
 ) -> list[str]:
-    """Extract Base64-encoded JPEG frames from a video file."""
-    if frames_per_second_to_capture <= 0:
-        frames_per_second_to_capture = 1
-
+    """Extract Base64-encoded PNG frames from a video file using ffmpeg scene detection."""
     if not os.path.exists(video_path):
         print(f"Warning: Video file not found at {video_path}")
         return []
 
-    video = cv2.VideoCapture(video_path)
-    if not video.isOpened():
-        print(f"Warning: Could not open video file {video_path}")
-        return []
-
     encoded_frames: list[str] = []
-    video_fps = video.get(cv2.CAP_PROP_FPS)
-    if video_fps and video_fps > 0:
-        frame_interval = max(int(video_fps // frames_per_second_to_capture), 1)
-    else:
-        frame_interval = 1
 
-    frame_index = 0
-    while True:
-        success, frame = video.read()
-        if not success:
-            break
-
-        if frame_index % frame_interval == 0:
-            ok, buffer = cv2.imencode(".jpg", frame)
-            if ok:
-                encoded_frames.append(base64.b64encode(buffer).decode("utf-8"))
-        frame_index += 1
-
-    video.release()
+    with tempfile.TemporaryDirectory(dir=output_dir) as temp_dir:
+        output_pattern = os.path.join(temp_dir, "out%d.png")
+        command = [
+            "ffmpeg",
+            "-i", video_path,
+            "-vf", "select='eq(n\\,0)+gt(scene\\,0.05)',scale=720:-1",
+            "-fps_mode", "vfr",
+            "-frame_pts", "1",
+            output_pattern
+        ]
+        
+        try:
+            subprocess.run(command, check=True, capture_output=True, text=True)
+            
+            frame_files = sorted(glob.glob(os.path.join(temp_dir, "*.png")), 
+                                 key=lambda x: int(re.search(r'out(\d+)\.png$', x).group(1)) if re.search(r'out(\d+)\.png$', x) else 0)
+            
+            for frame_file in frame_files:
+                with open(frame_file, "rb") as f:
+                    encoded_frames.append(base64.b64encode(f.read()).decode("utf-8"))
+                    
+        except subprocess.CalledProcessError as e:
+            print(f"Error extracting frames: {e.stderr}")
+        except Exception as e:
+            print(f"Error processing frames: {e}")
+            
     return encoded_frames
 
 
@@ -686,7 +714,7 @@ def summarize_clips_with_llm(
     chapter_transcripts_dir: str,
     output_json_path: str,
     api_url: str = "http://localhost:8000/v1/chat/completions",
-    model_name: str = "Qwen3-VL",
+    model_name: str = "mistral-large",
     container_video_root: str = "/root/video",
 ) -> bool:
     """
@@ -810,10 +838,14 @@ def summarize_clips_with_llm(
                 f"{transcript_text}\n"
                 "---"
             )
-            user_content = [
-                {"type": "text", "text": user_prompt_text},
-                {"type": "video_url", "video_url": {"url": file_url}},
-            ]
+            frames = _encode_video_frames(clip_path, clips_dir)
+            user_content = [{"type": "text", "text": user_prompt_text}]
+            
+            for frame_b64 in frames[:32]:
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{frame_b64}"}
+                })
             payload = {
                 "model": model_name,
                 "messages": [
@@ -947,7 +979,7 @@ def generate_timestamps_with_llm(
 
     # 2. Set up the API request details.
     api_url = "http://localhost:8000/v1/chat/completions"
-    model_name = "Qwen3-VL"
+    model_name = "mistral-large"
     system_prompt = "You are a helpful assistant that analyzes video transcripts and generates chapter timestamps in the format 'HH:MM:SS - Chapter Title'."
     user_prompt = f"""
 Based on the following video transcript, please generate a list of key topics or chapters with timestamps.
