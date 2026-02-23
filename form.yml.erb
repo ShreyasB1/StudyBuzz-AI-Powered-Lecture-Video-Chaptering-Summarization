@@ -5,26 +5,26 @@ attributes:
     widget: "path_selector"
     label: "HuggingFace Model Cache Path"
     directory: "/storage"
-    required: true
+    required: false
     readonly: false
     show_hidden: false
-    value: "/storage/ice-shared/vip-vp4/huggingface"
+    value: "/storage/ice-shared/vip-vp4/models"
     favorites:
-      - "/storage/ice-shared/vip-vp4/huggingface"
+      - "/storage/ice-shared/vip-vp4/models"
       - "<%= CurrentUser.home %>"
-    help: "Path to the HuggingFace model cache containing the Qwen3-VL weights."
+    help: "Path to the HuggingFace model cache containing the Qwen3-VL weights. Leave default if models are not yet downloaded -- the web UI will still start."
   whisper_path:
     widget: "path_selector"
     label: "Whisper Tools Path"
     directory: "/storage"
-    required: true
+    required: false
     readonly: false
     show_hidden: false
-    value: "/storage/ice-shared/vip-vp4/whisper"
+    value: "/storage/ice-shared/vip-vp4/models"
     favorites:
-      - "/storage/ice-shared/vip-vp4/whisper"
+      - "/storage/ice-shared/vip-vp4/models"
       - "<%= CurrentUser.home %>"
-    help: "Directory containing whisper-cli binary and ggml-large-v3-turbo.bin model file."
+    help: "Directory containing whisper-cli binary and ggml-large-v3-turbo.bin model file. If not set up yet, the app will start without transcription support."
   qos:
     widget: select
     label: "Quality of Service"

@@ -79,18 +79,34 @@ podman build \
 echo "TIMING - StudyBuzz image built at: $(date)"
 
 # ---------------------------------------------------------------------------
-# Start the StudyBuzz Flask container immediately
+# Start the StudyBuzz Flask container
+# Whisper mount is optional -- if the path doesn't exist, start without it.
 # ---------------------------------------------------------------------------
 echo "TIMING - Starting StudyBuzz container at: $(date)"
+
+WHISPER_MOUNT_ARGS=()
+if [ -n "${WHISPER_PATH}" ] && [ -d "${WHISPER_PATH}" ]; then
+  echo "Whisper path found at ${WHISPER_PATH}, mounting into container."
+  WHISPER_MOUNT_ARGS=(-v "${WHISPER_PATH}:/opt/whisper:ro" -e PATH="/opt/whisper:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin")
+else
+  echo "WARNING: Whisper path '${WHISPER_PATH}' not found. Starting without Whisper."
+  echo "  Transcription will not work until whisper-cli is available."
+fi
 
 podman run -d \
   --pod "${POD_NAME}" \
   --name "studybuzz-app-${SLURM_JOB_ID}" \
   -v "${UPLOADS_DIR}:/app/uploads:Z" \
   -v "${OUTPUT_DIR}:/app/output:Z" \
-  -v "${WHISPER_PATH}:/opt/whisper:ro" \
-  -e PATH="/opt/whisper:${PATH}" \
+  "${WHISPER_MOUNT_ARGS[@]}" \
   "studybuzz-app-${SLURM_JOB_ID}"
+
+if podman ps --filter "name=studybuzz-app-${SLURM_JOB_ID}" --format "{{.Names}}" | grep -q "studybuzz-app"; then
+  echo "StudyBuzz container is running."
+else
+  echo "ERROR: StudyBuzz container failed to start!"
+  podman logs "studybuzz-app-${SLURM_JOB_ID}" 2>&1 || true
+fi
 
 echo "TIMING - StudyBuzz Flask app started at: $(date)"
 echo "StudyBuzz web UI is now accessible on port ${STUDYBUZZ_PORT}"
@@ -98,52 +114,62 @@ echo "Access via OnDemand: https://ondemand-ice.pace.gatech.edu/node/${HOSTNAME}
 
 # ---------------------------------------------------------------------------
 # Start vLLM container (model loading happens in the background)
+# HuggingFace cache mount is optional -- skip vLLM if not available.
 # ---------------------------------------------------------------------------
-echo "TIMING - Starting vLLM server at: $(date)"
+if [ -n "${HUGGINGFACE_CACHE_PATH}" ] && [ -d "${HUGGINGFACE_CACHE_PATH}" ]; then
+  echo "TIMING - Starting vLLM server at: $(date)"
 
-TENSOR_PARALLEL=${NUM_GPUS:-8}
+  TENSOR_PARALLEL=${NUM_GPUS:-8}
 
-podman run -d \
-  --pod "${POD_NAME}" \
-  --name "vllm-${SLURM_JOB_ID}" \
-  --device nvidia.com/gpu=all \
-  --ipc=host \
-  -v "${HUGGINGFACE_CACHE_PATH}:/root/.cache/huggingface" \
-  -v "${VIDEO_DIR}:/root/video" \
-  docker.io/vllm/vllm-openai:latest \
-  --model Qwen/Qwen3-VL-235B-A22B-Thinking-FP8 \
-  --served-model-name Qwen3-VL \
-  --enable-expert-parallel \
-  --swap-space 16 \
-  --max-num-seqs 512 \
-  --gpu-memory-utilization 0.9 \
-  --tensor-parallel-size "${TENSOR_PARALLEL}" \
-  --allowed-local-media-path /root/video \
-  --trust-remote-code \
-  --host 0.0.0.0 \
-  --port 8000
+  podman run -d \
+    --pod "${POD_NAME}" \
+    --name "vllm-${SLURM_JOB_ID}" \
+    --device nvidia.com/gpu=all \
+    --ipc=host \
+    -v "${HUGGINGFACE_CACHE_PATH}:/root/.cache/huggingface" \
+    -v "${VIDEO_DIR}:/root/video" \
+    docker.io/vllm/vllm-openai:latest \
+    --model Qwen/Qwen3-VL-235B-A22B-Thinking-FP8 \
+    --served-model-name Qwen3-VL \
+    --enable-expert-parallel \
+    --swap-space 16 \
+    --max-num-seqs 512 \
+    --gpu-memory-utilization 0.9 \
+    --tensor-parallel-size "${TENSOR_PARALLEL}" \
+    --allowed-local-media-path /root/video \
+    --trust-remote-code \
+    --host 0.0.0.0 \
+    --port 8000
 
-echo "vLLM container started. Model loading takes ~20 minutes in the background."
-echo "The web UI is usable now; video processing will work once vLLM finishes loading."
+  if podman ps --filter "name=vllm-${SLURM_JOB_ID}" --format "{{.Names}}" | grep -q "vllm"; then
+    echo "vLLM container is running. Model loading takes ~20 minutes in the background."
+  else
+    echo "ERROR: vLLM container failed to start!"
+    podman logs "vllm-${SLURM_JOB_ID}" 2>&1 || true
+  fi
+
+  # Monitor vLLM readiness in the background (informational only)
+  (
+    VLLM_ELAPSED=0
+    VLLM_INTERVAL=30
+    while true; do
+      if curl -s "http://localhost:8000/health" > /dev/null 2>&1; then
+        echo "TIMING - vLLM model fully loaded and ready at: $(date)"
+        break
+      fi
+      sleep ${VLLM_INTERVAL}
+      VLLM_ELAPSED=$((VLLM_ELAPSED + VLLM_INTERVAL))
+      echo "  vLLM still loading model... (${VLLM_ELAPSED}s elapsed)"
+    done
+  ) &
+else
+  echo "WARNING: HuggingFace cache path '${HUGGINGFACE_CACHE_PATH}' not found. Skipping vLLM."
+  echo "  Video processing will not work until models are available."
+fi
 
 # Log job info
 logger -p user.notice -t "ondemand" -- \
   "User: $USER; Host: $HOSTNAME; JobID: $SLURM_JOB_ID; StudyBuzz Port: ${STUDYBUZZ_PORT}; vLLM Port: ${VLLM_PORT}"
-
-# Monitor vLLM readiness in the background (informational only)
-(
-  VLLM_ELAPSED=0
-  VLLM_INTERVAL=30
-  while true; do
-    if curl -s "http://localhost:8000/health" > /dev/null 2>&1; then
-      echo "TIMING - vLLM model fully loaded and ready at: $(date)"
-      break
-    fi
-    sleep ${VLLM_INTERVAL}
-    VLLM_ELAPSED=$((VLLM_ELAPSED + VLLM_INTERVAL))
-    echo "  vLLM still loading model... (${VLLM_ELAPSED}s elapsed)"
-  done
-) &
 
 # Keep the script alive so the SLURM job does not exit
 tail -f /dev/null
