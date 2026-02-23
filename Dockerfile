@@ -10,7 +10,7 @@ COPY frontend/video-summarizer-ui/ ./
 RUN npm run build
 
 # Stage 2: Python runtime with Flask, FFmpeg, and OpenCV
-FROM python:3.11
+FROM python:3.11-slim
 
 WORKDIR /app
 
@@ -19,9 +19,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# APT::Sandbox::User=root avoids privilege-drop failures under
+# rootless Podman without subuid ranges (common on shared HPC clusters).
+RUN apt-get -o APT::Sandbox::User=root update && \
+    apt-get -o APT::Sandbox::User=root install -y --no-install-recommends \
     ffmpeg \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
