@@ -50,6 +50,11 @@ echo "Number of GPUs: ${NUM_GPUS}"
 echo "HuggingFace cache: ${HUGGINGFACE_CACHE_PATH}"
 echo "Whisper path: ${WHISPER_PATH}"
 
+OUTPUT_DIR="${PWD}/output"
+VIDEO_DIR="${OUTPUT_DIR}/video"
+UPLOADS_DIR="${PWD}/uploads"
+mkdir -p "${VIDEO_DIR}" "${UPLOADS_DIR}"
+
 # ---------------------------------------------------------------------------
 # Create Podman pod (shared network namespace for Flask + vLLM)
 # ---------------------------------------------------------------------------
@@ -64,13 +69,37 @@ podman pod create \
 echo "Pod created: ${POD_NAME}"
 
 # ---------------------------------------------------------------------------
-# Start vLLM container in the pod
+# Build the StudyBuzz app image FIRST (so Flask can start quickly)
+# ---------------------------------------------------------------------------
+echo "TIMING - Building StudyBuzz app image at: $(date)"
+
+podman build \
+  -t "studybuzz-app-${SLURM_JOB_ID}" .
+
+echo "TIMING - StudyBuzz image built at: $(date)"
+
+# ---------------------------------------------------------------------------
+# Start the StudyBuzz Flask container immediately
+# ---------------------------------------------------------------------------
+echo "TIMING - Starting StudyBuzz container at: $(date)"
+
+podman run -d \
+  --pod "${POD_NAME}" \
+  --name "studybuzz-app-${SLURM_JOB_ID}" \
+  -v "${UPLOADS_DIR}:/app/uploads:Z" \
+  -v "${OUTPUT_DIR}:/app/output:Z" \
+  -v "${WHISPER_PATH}:/opt/whisper:ro" \
+  -e PATH="/opt/whisper:${PATH}" \
+  "studybuzz-app-${SLURM_JOB_ID}"
+
+echo "TIMING - StudyBuzz Flask app started at: $(date)"
+echo "StudyBuzz web UI is now accessible on port ${STUDYBUZZ_PORT}"
+echo "Access via OnDemand: https://ondemand-ice.pace.gatech.edu/node/${HOSTNAME}/${STUDYBUZZ_PORT}/"
+
+# ---------------------------------------------------------------------------
+# Start vLLM container (model loading happens in the background)
 # ---------------------------------------------------------------------------
 echo "TIMING - Starting vLLM server at: $(date)"
-
-OUTPUT_DIR="${PWD}/output"
-VIDEO_DIR="${OUTPUT_DIR}/video"
-mkdir -p "${VIDEO_DIR}"
 
 TENSOR_PARALLEL=${NUM_GPUS:-8}
 
@@ -94,60 +123,27 @@ podman run -d \
   --host 0.0.0.0 \
   --port 8000
 
-echo "vLLM container started. Model loading may take ~20 minutes..."
-
-# Poll until vLLM is responsive (generous timeout for large model loading)
-VLLM_TIMEOUT=1800
-VLLM_ELAPSED=0
-VLLM_INTERVAL=15
-while [ ${VLLM_ELAPSED} -lt ${VLLM_TIMEOUT} ]; do
-  if curl -s "http://localhost:${VLLM_PORT}/health" > /dev/null 2>&1; then
-    echo "TIMING - vLLM is ready at: $(date)"
-    break
-  fi
-  sleep ${VLLM_INTERVAL}
-  VLLM_ELAPSED=$((VLLM_ELAPSED + VLLM_INTERVAL))
-  echo "  Waiting for vLLM... (${VLLM_ELAPSED}s / ${VLLM_TIMEOUT}s)"
-done
-
-if [ ${VLLM_ELAPSED} -ge ${VLLM_TIMEOUT} ]; then
-  echo "WARNING: vLLM did not become ready within ${VLLM_TIMEOUT}s."
-  echo "=== vLLM container logs ==="
-  podman logs "vllm-${SLURM_JOB_ID}" 2>&1 | tail -50
-  echo "=== end vLLM logs ==="
-  echo "Continuing anyway -- the app will start but processing will fail until vLLM is ready."
-fi
-
-# ---------------------------------------------------------------------------
-# Build and start the StudyBuzz app container
-# ---------------------------------------------------------------------------
-echo "TIMING - Building StudyBuzz container at: $(date)"
-
-podman build \
-  -t "studybuzz-app-${SLURM_JOB_ID}" .
-
-echo "TIMING - Starting StudyBuzz container at: $(date)"
-
-UPLOADS_DIR="${PWD}/uploads"
-mkdir -p "${UPLOADS_DIR}"
-
-podman run -d \
-  --pod "${POD_NAME}" \
-  --name "studybuzz-app-${SLURM_JOB_ID}" \
-  -v "${UPLOADS_DIR}:/app/uploads:Z" \
-  -v "${OUTPUT_DIR}:/app/output:Z" \
-  -v "${WHISPER_PATH}:/opt/whisper:ro" \
-  -e PATH="/opt/whisper:${PATH}" \
-  "studybuzz-app-${SLURM_JOB_ID}"
-
-echo "TIMING - StudyBuzz application started at: $(date)"
-echo "StudyBuzz is running on port ${STUDYBUZZ_PORT}"
-echo "vLLM is running on port ${VLLM_PORT}"
-echo "Access via OnDemand: https://ondemand-ice.pace.gatech.edu/node/${HOSTNAME}/${STUDYBUZZ_PORT}/"
+echo "vLLM container started. Model loading takes ~20 minutes in the background."
+echo "The web UI is usable now; video processing will work once vLLM finishes loading."
 
 # Log job info
 logger -p user.notice -t "ondemand" -- \
   "User: $USER; Host: $HOSTNAME; JobID: $SLURM_JOB_ID; StudyBuzz Port: ${STUDYBUZZ_PORT}; vLLM Port: ${VLLM_PORT}"
+
+# Monitor vLLM readiness in the background (informational only)
+(
+  VLLM_ELAPSED=0
+  VLLM_INTERVAL=30
+  while true; do
+    if curl -s "http://localhost:8000/health" > /dev/null 2>&1; then
+      echo "TIMING - vLLM model fully loaded and ready at: $(date)"
+      break
+    fi
+    sleep ${VLLM_INTERVAL}
+    VLLM_ELAPSED=$((VLLM_ELAPSED + VLLM_INTERVAL))
+    echo "  vLLM still loading model... (${VLLM_ELAPSED}s elapsed)"
+  done
+) &
 
 # Keep the script alive so the SLURM job does not exit
 tail -f /dev/null
