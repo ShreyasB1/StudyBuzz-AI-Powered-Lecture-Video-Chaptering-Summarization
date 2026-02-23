@@ -193,26 +193,25 @@ StudyBuzz can be deployed as an interactive app on Georgia Tech's PACE Sandbox t
 
 - SSH access to PACE (`login-ice.pace.gatech.edu`)
 - Podman available on the cluster (pre-installed on PACE)
-- The Qwen3-VL model weights cached on shared storage (e.g., `/storage/ice-shared/vip-vp4/huggingface`)
-- A `whisper-cli` binary and `ggml-large-v3-turbo.bin` model on shared storage (e.g., `/storage/ice-shared/vip-vp4/whisper`)
+- Load your model in the shared library (e.g., `/storage/ice-shared/vip-vp4/huggingface`)
+- Load your Whisper model or whatever speech-to-text model shared storage (e.g., `/storage/ice-shared/vip-vp4/whisper`)
 
 ### Step 1: Clone into the OnDemand dev directory
 
-Open OnDemand discovers apps placed in `~/ondemand/dev/`. Clone or copy the repository there:
+Open OnDemand discovers apps placed in `~/ondemand/dev/` in your PACE file directory. Clone or copy the repository there:
 
 ```bash
 ssh <your-gt-username>@login-ice.pace.gatech.edu
 
-mkdir -p ~/ondemand/dev
-git clone https://github.gatech.edu/OLIVES-VIP-VP4-AIMN/M-SB-TUT-Stud-1.git ~/ondemand/dev/studybuzz
+cd <insert-path-to-your-dev-folder>
+git clone https://github.gatech.edu/OLIVES-VIP-VP4-AIMN/M-SB-TUT-Stud-1.git 
 ```
 
 ### Step 2: Pre-build container images
 
-From inside the app directory, run the install script to build the StudyBuzz Docker image and pull the vLLM image. This caches the images so job startup is faster.
+From inside the app directory (you should be in `/ondemand/dev/SB-V-1a`), run the install script to build the StudyBuzz Docker image and pull the vLLM image. This caches the images so job startup is faster.
 
 ```bash
-cd ~/ondemand/dev/studybuzz
 bash install.sh
 ```
 
@@ -220,13 +219,13 @@ bash install.sh
 
 ### Step 3: Launch from Open OnDemand
 
-1. Open **https://ondemand-ice.pace.gatech.edu** in your browser
-2. Navigate to **Develop** (top menu) and find **StudyBuzz** (apps in `~/ondemand/dev/` appear here)
+1. Go to **https://ondemand-ice.pace.gatech.edu** 
+2. Navigate to **Develop** (top menu) and find **StudyBuzz** or whatever you name it (apps in `~/ondemand/dev/` appear here)
 3. Fill out the launch form:
-   - **HuggingFace Model Cache Path** — directory containing the Qwen3-VL model weights
-   - **Whisper Tools Path** — directory containing `whisper-cli` and `ggml-large-v3-turbo.bin`
-   - **Node Type** — select **H200 HGX** (recommended) or **H100 HGX**
-   - **GPUs** — set to **8** for the full Qwen3-VL-235B model with tensor parallelism
+   - **HuggingFace Model Cache Path** — directory containing the model weights (will be empty for now since not using Qwen anymore)
+   - **Whisper Tools Path** — directory containing `whisper-cli` and `ggml-large-v3-turbo.bin` (not currently there FYI!)
+   - **Node Type** — select **H200 HGX** (recommended) 
+   - **GPUs** — set to **8** 
    - **Cores** — 8 recommended
    - **Memory Per Core** — 16 GB recommended
    - Set your desired **job duration**
@@ -236,7 +235,7 @@ bash install.sh
 
 Once the SLURM job starts and containers are ready, a **Connect to StudyBuzz** button appears. Click it to open the web UI.
 
-> **Startup time:** vLLM takes approximately 20 minutes to load the Qwen3-VL-235B model. The web interface is accessible immediately, but video processing will not work until the model finishes loading.
+> **Startup time:** vLLM takes potentially up to 20 minutes to load the models. The web interface is accessible immediately, but video processing will not work until the model finishes loading.
 
 ### How it works
 
@@ -312,3 +311,4 @@ The Dockerfile uses `npm install` instead of `npm ci` to handle lock file mismat
 - [Whisper.cpp](https://github.com/ggerganov/whisper.cpp)
 - [vLLM](https://github.com/vllm-project/vllm)
 - Georgia Tech AI Makerspace (https://coe.gatech.edu/academics/ai-for-engineering/ai-makerspace)
+- Open OnDemand (https://osc.github.io/ood-documentation/latest/)
