@@ -209,9 +209,11 @@ git clone https://github.gatech.edu/OLIVES-VIP-VP4-AIMN/M-SB-TUT-Stud-1.git
 
 ### Step 2: Pre-build container images
 
-From inside the app directory (you should be in `/ondemand/dev/SB-V-1a`), run the install script to build the StudyBuzz Docker image and pull the vLLM image. This caches the images so job startup is faster.
+From inside the app directory (you should be in `/ondemand/dev/SB-V-1a`), run the install script to build the StudyBuzz Docker image and pull the vLLM image. This caches the images so job startup is faster. `sed -i 's/\r$//' install.sh` is an optional command but is needed for files that are edited on Windows that have CRLF line endings that break shell scripts on Linux machines. The `install.sh` script should be able to hanlde this automatically but you must fix `install.sh` itself using the command.
 
 ```bash
+sed -i 's/\r$//' install.sh
+
 bash install.sh
 ```
 
@@ -250,7 +252,7 @@ Compute Node (H200 HGX, 8 GPUs)
     │     └── vllm container            ← Qwen3-VL-235B-FP8 (port 8000)
     │
     ▼
-User accesses: https://ondemand-ice.pace.gatech.edu/node/<host>/5000/
+User accesses: https://ondemand-ice.pace.gatech.edu/node/<host>/<port>/
 ```
 
 The deployment is managed by these files:
@@ -276,6 +278,7 @@ After making code changes, push to GitHub and pull on PACE:
 ```bash
 cd ~/ondemand/dev/studybuzz
 git pull
+sed -i 's/\r$//' install.sh
 bash install.sh   # rebuild the Docker image with your changes
 ```
 
@@ -285,6 +288,14 @@ Then launch a new session from the OnDemand dashboard.
 
 ## Troubleshooting
 
+### Checking logs
+
+Each session writes logs to the output directory shown in the OnDemand session card. To check what happened during a session:
+
+1. In the OnDemand session list, find the session's output directory path
+2. SSH in and read `output.log` in that directory
+3. Or click the session's folder icon in the OnDemand dashboard to browse logs in the file manager
+
 ### Chapters are inaccurate
 
 - Ensure vLLM server is fully loaded before processing
@@ -293,11 +304,16 @@ Then launch a new session from the OnDemand dashboard.
 
 ### Podman build fails with `setgroups` or `seteuid` errors
 
-This happens on PACE because rootless Podman does not have subuid/subgid ranges configured for your user. The Dockerfile already works around this by passing `-o APT::Sandbox::User=root` to apt-get. If you see this error on a new Dockerfile, add the same flag to your `apt-get` commands.
+This happens on PACE because rootless Podman does not have subuid/subgid ranges configured. The Dockerfile works around this by passing `-o APT::Sandbox::User=root` to apt-get. If you add new Dockerfiles, include the same flag in `apt-get` commands.
+
+### `debconf: unable to initialize frontend` warnings during build
+
+These are harmless. They appear because apt-get runs non-interactively inside the Docker build and can't find a terminal for configuration dialogs. Packages still install correctly.
+
 
 ### `npm ci` fails with "package-lock.json out of sync"
 
-The Dockerfile uses `npm install` instead of `npm ci` to handle lock file mismatches. If you update `package.json`, delete `package-lock.json` or run `npm install` locally to regenerate it.
+The Dockerfile uses `npm install` instead of `npm ci` to handle lock file mismatches. If you update `package.json`, run `npm install` locally to regenerate the lock file.
 
 ### vLLM container exits immediately
 
