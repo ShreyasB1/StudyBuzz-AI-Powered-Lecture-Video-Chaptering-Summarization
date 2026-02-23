@@ -3,8 +3,8 @@ FROM node:20-alpine AS frontend-builder
 
 WORKDIR /app/frontend
 
-COPY frontend/video-summarizer-ui/package.json frontend/video-summarizer-ui/package-lock.json ./
-RUN npm ci
+COPY frontend/video-summarizer-ui/package.json frontend/video-summarizer-ui/package-lock.json* ./
+RUN npm install
 
 COPY frontend/video-summarizer-ui/ ./
 RUN npm run build
