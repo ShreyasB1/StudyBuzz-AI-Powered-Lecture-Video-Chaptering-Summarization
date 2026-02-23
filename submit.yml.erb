@@ -1,0 +1,23 @@
+batch_connect:
+  template: basic
+
+script:
+  qos: <%= qos %>
+  native:
+    - "--nodes=1"
+    - "--ntasks-per-node=<%= num_cores.blank? ? 8 : num_cores.to_i %>"
+    <%- unless num_mem_per_core.blank? -%>
+    - "--mem-per-cpu=<%= num_mem_per_core.to_i %>G"
+    <%- end -%>
+    <%- if num_gpus.to_i > 0 -%>
+    <%- if node_type == "nvidia_gpu" -%>
+    - "--gres=gpu:<%= num_gpus.to_i %>"
+    - "--constraint=nvidia-gpu"
+    <%- elsif node_type == "L40S" -%>
+    - "--gres=gpu:L40S:<%= num_gpus.to_i %>"
+    <%- elsif node_type == "H100_HGX" -%>
+    - "--gres=gpu:H100:<%= num_gpus.to_i %>"
+    <%- elsif node_type == "H200_HGX" -%>
+    - "--gres=gpu:H200:<%= num_gpus.to_i %>"
+    <%- end -%>
+    <%- end -%>

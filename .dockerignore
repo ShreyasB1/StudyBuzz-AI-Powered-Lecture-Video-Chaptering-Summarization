@@ -1,0 +1,12 @@
+node_modules
+frontend/video-summarizer-ui/node_modules
+frontend/video-summarizer-ui/build
+uploads
+output
+__pycache__
+*.pyc
+.git
+.env
+venv
+*.egg-info
+*.bin

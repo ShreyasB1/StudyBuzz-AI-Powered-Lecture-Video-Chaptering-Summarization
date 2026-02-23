@@ -1,0 +1,116 @@
+title: StudyBuzz
+cluster: "ice-rh9"
+attributes:
+  huggingface_cache_path:
+    widget: "path_selector"
+    label: "HuggingFace Model Cache Path"
+    directory: "/storage"
+    required: true
+    readonly: false
+    show_hidden: false
+    value: "/storage/ice-shared/vip-vp4/huggingface"
+    favorites:
+      - "/storage/ice-shared/vip-vp4/huggingface"
+      - "<%= CurrentUser.home %>"
+    help: "Path to the HuggingFace model cache containing the Qwen3-VL weights."
+  whisper_path:
+    widget: "path_selector"
+    label: "Whisper Tools Path"
+    directory: "/storage"
+    required: true
+    readonly: false
+    show_hidden: false
+    value: "/storage/ice-shared/vip-vp4/whisper"
+    favorites:
+      - "/storage/ice-shared/vip-vp4/whisper"
+      - "<%= CurrentUser.home %>"
+    help: "Directory containing whisper-cli binary and ggml-large-v3-turbo.bin model file."
+  qos:
+    widget: select
+    label: "Quality of Service"
+    options:
+      - ["Default (none)", ""]
+      - ["coc-ice", "coc-ice"]
+      - ["coc-grade", "coc-grade"]
+      - ["coe-ice", "coe-ice"]
+      - ["coe-grade", "coe-grade"]
+      - ["pace-ice", "pace-ice"]
+      - ["pace-grade", "pace-grade"]
+    value: "Default (none)"
+  node_type:
+    id: node_type
+    label: "Node Type"
+    widget: select
+    value: "H200_HGX"
+    options:
+      - ['NVIDIA GPU (first avail)', 'nvidia_gpu',
+          data-max-num-gpus: 8,
+          data-min-num-gpus: 1,
+          data-max-bc-num-slots: 1,
+          data-max-num-cores: 16,
+          data-max-num-mem-per-core: 64,
+        ]
+      - ['NVIDIA GPU L40S', 'L40S',
+          data-max-num-gpus: 4,
+          data-min-num-gpus: 1,
+          data-max-bc-num-slots: 1,
+          data-max-num-cores: 16,
+          data-max-num-mem-per-core: 64,
+        ]
+      - ['NVIDIA GPU H100 HGX', 'H100_HGX',
+          data-max-num-gpus: 8,
+          data-min-num-gpus: 1,
+          data-max-bc-num-slots: 1,
+          data-max-num-cores: 16,
+          data-max-num-mem-per-core: 64,
+        ]
+      - ['NVIDIA GPU H200 HGX', 'H200_HGX',
+          data-max-num-gpus: 8,
+          data-min-num-gpus: 1,
+          data-max-bc-num-slots: 1,
+          data-max-num-cores: 16,
+          data-max-num-mem-per-core: 64,
+        ]
+  bc_num_slots:
+    label: "Nodes"
+    min: 1
+    max: 1
+    step: 1
+    value: 1
+    help: "StudyBuzz requires only 1 node"
+  num_cores:
+    widget: number_field
+    label: "Cores"
+    min: 4
+    max: 16
+    step: 1
+    value: 8
+    help: 'Number of CPU cores for the application'
+  num_mem_per_core:
+    widget: number_field
+    label: "Memory Per Core (GB)"
+    min: 8
+    max: 64
+    step: 4
+    value: 16
+    help: "Memory allocation per core"
+  num_gpus:
+    label: "GPUs"
+    widget: number_field
+    min: 1
+    max: 8
+    step: 1
+    value: 8
+    help: "Number of GPUs. vLLM with Qwen3-VL-235B requires 8 GPUs (tensor-parallel-size 8)."
+
+form:
+  - huggingface_cache_path
+  - whisper_path
+  - qos
+  - node_type
+  - bc_num_slots
+  - num_cores
+  - num_gpus
+  - num_mem_per_core
+  - bc_num_hours
+  - bc_email_on_started

@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+
+echo "TIMING - Starting main script at: $(date)"
+echo "Job directory: ${PWD}"
+
+# ---------------------------------------------------------------------------
+# Resolve app source directory from Open OnDemand's staged_root
+# ---------------------------------------------------------------------------
+STAGED_ROOT="<%= session.staged_root %>"
+APP_NAME=$(echo "${STAGED_ROOT}" | sed -E 's|.*/batch_connect/dev/([^/]+)/.*|\1|')
+APP_DIR="${HOME}/ondemand/dev/${APP_NAME}"
+
+echo "App name: ${APP_NAME}"
+echo "App source directory: ${APP_DIR}"
+
+# ---------------------------------------------------------------------------
+# Copy source code into the job directory
+# ---------------------------------------------------------------------------
+echo "Copying source code to job directory..."
+
+for item in Dockerfile .dockerignore app.py timeStampGen.py requirements.txt requirements_backend.txt Makefile; do
+  if [ -f "${APP_DIR}/${item}" ]; then
+    cp "${APP_DIR}/${item}" "${PWD}/"
+    echo "  Copied ${item}"
+  else
+    echo "WARNING: ${item} not found at ${APP_DIR}/${item}"
+  fi
+done
+
+if [ -d "${APP_DIR}/frontend" ]; then
+  cp -r "${APP_DIR}/frontend" "${PWD}/"
+  echo "  Copied frontend/"
+else
+  echo "ERROR: frontend/ directory not found at ${APP_DIR}/frontend"
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Configure Podman
+# ---------------------------------------------------------------------------
+export XDG_RUNTIME_DIR="/tmp/run-$(id -u)"
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
+
+HOSTNAME=$(hostname)
+echo "Hostname: ${HOSTNAME}"
+echo "StudyBuzz port: ${STUDYBUZZ_PORT}"
+echo "vLLM port: ${VLLM_PORT}"
+echo "Number of GPUs: ${NUM_GPUS}"
+echo "HuggingFace cache: ${HUGGINGFACE_CACHE_PATH}"
+echo "Whisper path: ${WHISPER_PATH}"
+
+# ---------------------------------------------------------------------------
+# Create Podman pod (shared network namespace for Flask + vLLM)
+# ---------------------------------------------------------------------------
+echo "TIMING - Creating StudyBuzz pod at: $(date)"
+POD_NAME="studybuzz-pod-${SLURM_JOB_ID}"
+
+podman pod create \
+  --name "${POD_NAME}" \
+  -p "${STUDYBUZZ_PORT}:5000" \
+  -p "${VLLM_PORT}:8000"
+
+echo "Pod created: ${POD_NAME}"
+
+# ---------------------------------------------------------------------------
+# Start vLLM container in the pod
+# ---------------------------------------------------------------------------
+echo "TIMING - Starting vLLM server at: $(date)"
+
+OUTPUT_DIR="${PWD}/output"
+VIDEO_DIR="${OUTPUT_DIR}/video"
+mkdir -p "${VIDEO_DIR}"
+
+TENSOR_PARALLEL=${NUM_GPUS:-8}
+
+podman run -d \
+  --pod "${POD_NAME}" \
+  --name "vllm-${SLURM_JOB_ID}" \
+  --device nvidia.com/gpu=all \
+  --ipc=host \
+  -v "${HUGGINGFACE_CACHE_PATH}:/root/.cache/huggingface" \
+  -v "${VIDEO_DIR}:/root/video" \
+  docker.io/vllm/vllm-openai:latest \
+  --model Qwen/Qwen3-VL-235B-A22B-Thinking-FP8 \
+  --served-model-name Qwen3-VL \
+  --enable-expert-parallel \
+  --swap-space 16 \
+  --max-num-seqs 512 \
+  --gpu-memory-utilization 0.9 \
+  --tensor-parallel-size "${TENSOR_PARALLEL}" \
+  --allowed-local-media-path /root/video \
+  --trust-remote-code \
+  --host 0.0.0.0 \
+  --port 8000
+
+echo "vLLM container started. Model loading may take ~20 minutes..."
+
+# Poll until vLLM is responsive (generous timeout for large model loading)
+VLLM_TIMEOUT=1800
+VLLM_ELAPSED=0
+VLLM_INTERVAL=15
+while [ ${VLLM_ELAPSED} -lt ${VLLM_TIMEOUT} ]; do
+  if curl -s "http://localhost:${VLLM_PORT}/health" > /dev/null 2>&1; then
+    echo "TIMING - vLLM is ready at: $(date)"
+    break
+  fi
+  sleep ${VLLM_INTERVAL}
+  VLLM_ELAPSED=$((VLLM_ELAPSED + VLLM_INTERVAL))
+  echo "  Waiting for vLLM... (${VLLM_ELAPSED}s / ${VLLM_TIMEOUT}s)"
+done
+
+if [ ${VLLM_ELAPSED} -ge ${VLLM_TIMEOUT} ]; then
+  echo "WARNING: vLLM did not become ready within ${VLLM_TIMEOUT}s."
+  echo "=== vLLM container logs ==="
+  podman logs "vllm-${SLURM_JOB_ID}" 2>&1 | tail -50
+  echo "=== end vLLM logs ==="
+  echo "Continuing anyway -- the app will start but processing will fail until vLLM is ready."
+fi
+
+# ---------------------------------------------------------------------------
+# Build and start the StudyBuzz app container
+# ---------------------------------------------------------------------------
+echo "TIMING - Building StudyBuzz container at: $(date)"
+
+podman build \
+  -t "studybuzz-app-${SLURM_JOB_ID}" .
+
+echo "TIMING - Starting StudyBuzz container at: $(date)"
+
+UPLOADS_DIR="${PWD}/uploads"
+mkdir -p "${UPLOADS_DIR}"
+
+podman run -d \
+  --pod "${POD_NAME}" \
+  --name "studybuzz-app-${SLURM_JOB_ID}" \
+  -v "${UPLOADS_DIR}:/app/uploads:Z" \
+  -v "${OUTPUT_DIR}:/app/output:Z" \
+  -v "${WHISPER_PATH}:/opt/whisper:ro" \
+  -e PATH="/opt/whisper:${PATH}" \
+  "studybuzz-app-${SLURM_JOB_ID}"
+
+echo "TIMING - StudyBuzz application started at: $(date)"
+echo "StudyBuzz is running on port ${STUDYBUZZ_PORT}"
+echo "vLLM is running on port ${VLLM_PORT}"
+echo "Access via OnDemand: https://ondemand-ice.pace.gatech.edu/node/${HOSTNAME}/${STUDYBUZZ_PORT}/"
+
+# Log job info
+logger -p user.notice -t "ondemand" -- \
+  "User: $USER; Host: $HOSTNAME; JobID: $SLURM_JOB_ID; StudyBuzz Port: ${STUDYBUZZ_PORT}; vLLM Port: ${VLLM_PORT}"
+
+# Keep the script alive so the SLURM job does not exit
+tail -f /dev/null

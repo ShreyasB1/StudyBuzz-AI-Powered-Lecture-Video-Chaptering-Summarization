@@ -1,0 +1,9 @@
+---
+name: StudyBuzz
+category: Interactive Apps
+subcategory: Compute Node Jobs
+role: batch_connect
+description: |
+  AI-powered lecture video chaptering and summarization.
+  Upload a lecture video and get auto-generated chapters with summaries
+  powered by Whisper transcription and Qwen3-VL multimodal LLM.
