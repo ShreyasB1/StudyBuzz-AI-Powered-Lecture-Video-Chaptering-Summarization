@@ -18,7 +18,7 @@ echo "App source directory: ${APP_DIR}"
 # ---------------------------------------------------------------------------
 echo "Copying source code to job directory..."
 
-for item in Dockerfile .dockerignore app.py timeStampGen.py requirements.txt requirements_backend.txt Makefile; do
+for item in Dockerfile .dockerignore app.py timeStampGen.py vllm_to_vtt.py requirements.txt requirements_backend.txt Makefile; do
   if [ -f "${APP_DIR}/${item}" ]; then
     cp "${APP_DIR}/${item}" "${PWD}/"
     echo "  Copied ${item}"
@@ -27,11 +27,11 @@ for item in Dockerfile .dockerignore app.py timeStampGen.py requirements.txt req
   fi
 done
 
-if [ -d "${APP_DIR}/frontend" ]; then
-  cp -r "${APP_DIR}/frontend" "${PWD}/"
-  echo "  Copied frontend/"
+if [ -d "${APP_DIR}/static" ]; then
+  cp -r "${APP_DIR}/static" "${PWD}/"
+  echo "  Copied static/"
 else
-  echo "ERROR: frontend/ directory not found at ${APP_DIR}/frontend"
+  echo "ERROR: static/ directory not found at ${APP_DIR}/static"
   exit 1
 fi
 
@@ -45,10 +45,8 @@ chmod 700 "$XDG_RUNTIME_DIR"
 HOSTNAME=$(hostname)
 echo "Hostname: ${HOSTNAME}"
 echo "StudyBuzz port: ${STUDYBUZZ_PORT}"
-echo "vLLM port: ${VLLM_PORT}"
 echo "Number of GPUs: ${NUM_GPUS}"
 echo "HuggingFace cache: ${HUGGINGFACE_CACHE_PATH}"
-echo "Whisper path: ${WHISPER_PATH}"
 
 OUTPUT_DIR="${PWD}/output"
 VIDEO_DIR="${OUTPUT_DIR}/video"
@@ -56,20 +54,20 @@ UPLOADS_DIR="${PWD}/uploads"
 mkdir -p "${VIDEO_DIR}" "${UPLOADS_DIR}"
 
 # ---------------------------------------------------------------------------
-# Create Podman pod (shared network namespace for Flask + vLLM)
+# Create Podman pod (shared network namespace for all containers)
+# Only the Flask port is mapped externally; model servers use localhost.
 # ---------------------------------------------------------------------------
 echo "TIMING - Creating StudyBuzz pod at: $(date)"
 POD_NAME="studybuzz-pod-${SLURM_JOB_ID}"
 
 podman pod create \
   --name "${POD_NAME}" \
-  -p "${STUDYBUZZ_PORT}:5000" \
-  -p "${VLLM_PORT}:8000"
+  -p "${STUDYBUZZ_PORT}:5000"
 
 echo "Pod created: ${POD_NAME}"
 
 # ---------------------------------------------------------------------------
-# Build the StudyBuzz app image FIRST (so Flask can start quickly)
+# Build the StudyBuzz app image
 # ---------------------------------------------------------------------------
 echo "TIMING - Building StudyBuzz app image at: $(date)"
 
@@ -79,26 +77,15 @@ podman build \
 echo "TIMING - StudyBuzz image built at: $(date)"
 
 # ---------------------------------------------------------------------------
-# Start the StudyBuzz Flask container
-# Whisper mount is optional -- if the path doesn't exist, start without it.
+# Start the StudyBuzz Flask container (no GPU needed)
 # ---------------------------------------------------------------------------
 echo "TIMING - Starting StudyBuzz container at: $(date)"
-
-WHISPER_MOUNT_ARGS=()
-if [ -n "${WHISPER_PATH}" ] && [ -d "${WHISPER_PATH}" ]; then
-  echo "Whisper path found at ${WHISPER_PATH}, mounting into container."
-  WHISPER_MOUNT_ARGS=(-v "${WHISPER_PATH}:/opt/whisper:ro" -e PATH="/opt/whisper:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin")
-else
-  echo "WARNING: Whisper path '${WHISPER_PATH}' not found. Starting without Whisper."
-  echo "  Transcription will not work until whisper-cli is available."
-fi
 
 podman run -d \
   --pod "${POD_NAME}" \
   --name "studybuzz-app-${SLURM_JOB_ID}" \
   -v "${UPLOADS_DIR}:/app/uploads:Z" \
   -v "${OUTPUT_DIR}:/app/output:Z" \
-  "${WHISPER_MOUNT_ARGS[@]}" \
   "studybuzz-app-${SLURM_JOB_ID}"
 
 if podman ps --filter "name=studybuzz-app-${SLURM_JOB_ID}" --format "{{.Names}}" | grep -q "studybuzz-app"; then
@@ -113,63 +100,123 @@ echo "StudyBuzz web UI is now accessible on port ${STUDYBUZZ_PORT}"
 echo "Access via OnDemand: https://ondemand-ice.pace.gatech.edu/node/${HOSTNAME}/${STUDYBUZZ_PORT}/"
 
 # ---------------------------------------------------------------------------
-# Start vLLM container (model loading happens in the background)
-# HuggingFace cache mount is optional -- skip vLLM if not available.
+# Start Mistral vLLM container (port 8000, all GPUs, ~90% VRAM)
 # ---------------------------------------------------------------------------
 if [ -n "${HUGGINGFACE_CACHE_PATH}" ] && [ -d "${HUGGINGFACE_CACHE_PATH}" ]; then
-  echo "TIMING - Starting vLLM server at: $(date)"
+  echo "TIMING - Starting Mistral vLLM server at: $(date)"
 
   TENSOR_PARALLEL=${NUM_GPUS:-8}
 
   podman run -d \
     --pod "${POD_NAME}" \
-    --name "vllm-${SLURM_JOB_ID}" \
+    --name "mistral-vllm-${SLURM_JOB_ID}" \
     --device nvidia.com/gpu=all \
+    --security-opt=label=disable \
     --ipc=host \
     -v "${HUGGINGFACE_CACHE_PATH}:/root/.cache/huggingface" \
     -v "${VIDEO_DIR}:/root/video" \
-    docker.io/vllm/vllm-openai:latest \
-    --model Qwen/Qwen3-VL-235B-A22B-Thinking-FP8 \
-    --served-model-name Qwen3-VL \
-    --enable-expert-parallel \
-    --swap-space 16 \
-    --max-num-seqs 512 \
-    --gpu-memory-utilization 0.9 \
+    --env "HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}" \
+    --env "NCCL_DEBUG=INFO" \
+    --env "OMP_NUM_THREADS=16" \
+    docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129 \
+    --model mistralai/Mistral-Large-3-675B-Instruct-2512 \
+    --served-model-name mistral-large \
     --tensor-parallel-size "${TENSOR_PARALLEL}" \
+    --gpu-memory-utilization 0.90 \
+    --max-model-len 196608 \
+    --limit-mm-per-prompt '{"image": 32}' \
+    --max-num-batched-tokens 8192 \
+    --enable-chunked-prefill \
+    --max-num-seqs 2 \
+    --load-format mistral \
+    --tokenizer-mode mistral \
+    --config-format mistral \
+    --enable-auto-tool-choice \
+    --tool-call-parser mistral \
     --allowed-local-media-path /root/video \
-    --trust-remote-code \
     --host 0.0.0.0 \
     --port 8000
 
-  if podman ps --filter "name=vllm-${SLURM_JOB_ID}" --format "{{.Names}}" | grep -q "vllm"; then
-    echo "vLLM container is running. Model loading takes ~20 minutes in the background."
+  if podman ps --filter "name=mistral-vllm-${SLURM_JOB_ID}" --format "{{.Names}}" | grep -q "mistral-vllm"; then
+    echo "Mistral vLLM container is running. Model loading takes ~20 minutes."
   else
-    echo "ERROR: vLLM container failed to start!"
-    podman logs "vllm-${SLURM_JOB_ID}" 2>&1 || true
+    echo "ERROR: Mistral vLLM container failed to start!"
+    podman logs "mistral-vllm-${SLURM_JOB_ID}" 2>&1 || true
   fi
 
-  # Monitor vLLM readiness in the background (informational only)
+  # Monitor Mistral readiness in the background
   (
-    VLLM_ELAPSED=0
-    VLLM_INTERVAL=30
+    MISTRAL_ELAPSED=0
+    MISTRAL_INTERVAL=30
     while true; do
       if curl -s "http://localhost:8000/health" > /dev/null 2>&1; then
-        echo "TIMING - vLLM model fully loaded and ready at: $(date)"
+        echo "TIMING - Mistral model fully loaded and ready at: $(date)"
         break
       fi
-      sleep ${VLLM_INTERVAL}
-      VLLM_ELAPSED=$((VLLM_ELAPSED + VLLM_INTERVAL))
-      echo "  vLLM still loading model... (${VLLM_ELAPSED}s elapsed)"
+      sleep ${MISTRAL_INTERVAL}
+      MISTRAL_ELAPSED=$((MISTRAL_ELAPSED + MISTRAL_INTERVAL))
+      echo "  Mistral still loading model... (${MISTRAL_ELAPSED}s elapsed)"
     done
   ) &
+
+  # -------------------------------------------------------------------------
+  # Start Whisper vLLM container (port 8001, shares GPUs, ~9% VRAM)
+  # -------------------------------------------------------------------------
+  echo "TIMING - Starting Whisper vLLM server at: $(date)"
+
+  podman run -d \
+    --pod "${POD_NAME}" \
+    --name "whisper-vllm-${SLURM_JOB_ID}" \
+    --device nvidia.com/gpu=all \
+    --security-opt=label=disable \
+    --ipc=host \
+    -v "${HUGGINGFACE_CACHE_PATH}:/root/.cache/huggingface" \
+    --env "HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}" \
+    --env "VLLM_USE_DEEP_GEMM=0" \
+    --entrypoint /bin/bash \
+    docker.io/vllm/vllm-openai:v0.14.0 \
+    -c "pip install librosa soundfile && python3 -m vllm.entrypoints.openai.api_server \
+      --model openai/whisper-large-v3 \
+      --served-model-name whisper \
+      --dtype bfloat16 \
+      --max-model-len 448 \
+      --tensor-parallel-size 1 \
+      --swap-space 16 \
+      --gpu-memory-utilization 0.09 \
+      --trust-remote-code \
+      --host 0.0.0.0 \
+      --port 8001"
+
+  if podman ps --filter "name=whisper-vllm-${SLURM_JOB_ID}" --format "{{.Names}}" | grep -q "whisper-vllm"; then
+    echo "Whisper vLLM container is running. Model loading takes ~2 minutes."
+  else
+    echo "ERROR: Whisper vLLM container failed to start!"
+    podman logs "whisper-vllm-${SLURM_JOB_ID}" 2>&1 || true
+  fi
+
+  # Monitor Whisper readiness in the background
+  (
+    WHISPER_ELAPSED=0
+    WHISPER_INTERVAL=15
+    while true; do
+      if curl -s "http://localhost:8001/health" > /dev/null 2>&1; then
+        echo "TIMING - Whisper model fully loaded and ready at: $(date)"
+        break
+      fi
+      sleep ${WHISPER_INTERVAL}
+      WHISPER_ELAPSED=$((WHISPER_ELAPSED + WHISPER_INTERVAL))
+      echo "  Whisper still loading... (${WHISPER_ELAPSED}s elapsed)"
+    done
+  ) &
+
 else
-  echo "WARNING: HuggingFace cache path '${HUGGINGFACE_CACHE_PATH}' not found. Skipping vLLM."
+  echo "WARNING: HuggingFace cache path '${HUGGINGFACE_CACHE_PATH}' not found. Skipping model services."
   echo "  Video processing will not work until models are available."
 fi
 
 # Log job info
 logger -p user.notice -t "ondemand" -- \
-  "User: $USER; Host: $HOSTNAME; JobID: $SLURM_JOB_ID; StudyBuzz Port: ${STUDYBUZZ_PORT}; vLLM Port: ${VLLM_PORT}"
+  "User: $USER; Host: $HOSTNAME; JobID: $SLURM_JOB_ID; StudyBuzz Port: ${STUDYBUZZ_PORT}"
 
 # Keep the script alive so the SLURM job does not exit
 tail -f /dev/null

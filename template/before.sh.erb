@@ -10,16 +10,13 @@
 # Find available port for the StudyBuzz Flask app
 port=$(find_port)
 
-# Find available port for vLLM server
-export VLLM_PORT=$(find_port ${port})
-
 # Set Podman storage root to avoid conflicts between jobs
 export PODMAN_STORAGE_ROOT="${HOME}/.local/share/containers/storage-${SLURM_JOB_ID}"
 mkdir -p "${PODMAN_STORAGE_ROOT}"
 
-# Export paths from the form
+# Export paths and tokens from the form
 export HUGGINGFACE_CACHE_PATH="<%= context.huggingface_cache_path %>"
-export WHISPER_PATH="<%= context.whisper_path %>"
+export HF_TOKEN="<%= context.hf_token %>"
 export NUM_GPUS="<%= context.num_gpus %>"
 
 # Export the main app port

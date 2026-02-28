@@ -7,7 +7,7 @@ chmod 700 "$XDG_RUNTIME_DIR"
 
 echo "Fixing line endings (CRLF -> LF) on all deployment files..."
 for f in \
-  Dockerfile Makefile install.sh \
+  Dockerfile .dockerignore Makefile install.sh \
   manifest.yml form.yml.erb submit.yml.erb view.html.erb \
   template/before.sh.erb template/script.sh.erb template/after.sh template/clean.sh; do
   if [ -f "$f" ]; then
@@ -21,7 +21,10 @@ chmod +x template/script.sh.erb template/clean.sh template/after.sh install.sh
 echo "Building StudyBuzz Docker image..."
 make build-app
 
-echo "Pulling vLLM Docker image..."
-podman pull docker.io/vllm/vllm-openai:latest
+echo "Pulling Mistral vLLM Docker image..."
+podman pull docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129
 
-echo "Install complete. Images are ready."
+echo "Pulling Whisper vLLM Docker image..."
+podman pull docker.io/vllm/vllm-openai:v0.14.0
+
+echo "Install complete. All images are ready."

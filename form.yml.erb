@@ -8,23 +8,17 @@ attributes:
     required: false
     readonly: false
     show_hidden: false
-    value: "/storage/ice-shared/vip-vp4/models"
+    value: "/storage/ice-shared/vip-vp4/Spring2026/SB-V-1a/huggingface"
     favorites:
-      - "/storage/ice-shared/vip-vp4/models"
+      - "/storage/ice-shared/vip-vp4/Spring2026/SB-V-1a/huggingface"
       - "<%= CurrentUser.home %>"
-    help: "Path to the HuggingFace model cache containing the Qwen3-VL weights. Leave default if models are not yet downloaded -- the web UI will still start."
-  whisper_path:
-    widget: "path_selector"
-    label: "Whisper Tools Path"
-    directory: "/storage"
+    help: "Path to the HuggingFace model cache containing Mistral-Large-3 and Whisper weights. Leave default if models are not yet downloaded -- the web UI will still start."
+  hf_token:
+    widget: "text_field"
+    label: "HuggingFace Token"
     required: false
-    readonly: false
-    show_hidden: false
-    value: "/storage/ice-shared/vip-vp4/models"
-    favorites:
-      - "/storage/ice-shared/vip-vp4/models"
-      - "<%= CurrentUser.home %>"
-    help: "Directory containing whisper-cli binary and ggml-large-v3-turbo.bin model file. If not set up yet, the app will start without transcription support."
+    value: ""
+    help: "Your HuggingFace API token (starts with hf_). Required to download gated models like Mistral-Large-3. Leave blank if models are already cached."
   qos:
     widget: select
     label: "Quality of Service"
@@ -101,11 +95,11 @@ attributes:
     max: 8
     step: 1
     value: 8
-    help: "Number of GPUs. vLLM with Qwen3-VL-235B requires 8 GPUs (tensor-parallel-size 8)."
+    help: "Number of GPUs. Mistral-Large-3-675B requires 8 GPUs (tensor-parallel-size 8). Whisper shares the same GPUs with minimal memory."
 
 form:
   - huggingface_cache_path
-  - whisper_path
+  - hf_token
   - qos
   - node_type
   - bc_num_slots
