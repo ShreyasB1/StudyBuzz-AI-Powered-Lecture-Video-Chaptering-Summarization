@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import subprocess
 import uuid
@@ -66,24 +67,77 @@ def _check_service(url):
 
 
 def _process_video(job_id, video_path, video_basename):
+    base_name = os.path.splitext(video_basename)[0]
+    log_path = OUTPUT_FOLDER / f"{job_id}_pipeline.log"
+
     try:
         jobs[job_id]["status"] = "processing"
         jobs[job_id]["progress"] = "Starting pipeline..."
+        jobs[job_id]["log_file"] = str(log_path.name)
+
+        print(f"[Job {job_id[:8]}] Starting pipeline for {video_basename}", flush=True)
+        print(f"[Job {job_id[:8]}] Pipeline log: {log_path}", flush=True)
 
         cmd = [
-            "python",
+            sys.executable,
             str(BASE_DIR / "timeStampGen.py"),
             str(video_path),
             "-o",
             str(OUTPUT_FOLDER),
         ]
 
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, cwd=str(BASE_DIR)
-        )
+        with open(log_path, "w", encoding="utf-8") as log_file:
+            log_file.write(f"=== StudyBuzz Pipeline Log ===\n")
+            log_file.write(f"Job ID: {job_id}\n")
+            log_file.write(f"Video: {video_basename}\n")
+            log_file.write(f"Command: {' '.join(cmd)}\n")
+            log_file.write(f"{'=' * 40}\n\n")
+            log_file.flush()
 
-        if result.returncode == 0:
-            base_name = os.path.splitext(video_basename)[0]
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                cwd=str(BASE_DIR),
+                bufsize=1,
+            )
+
+            for line in process.stdout:
+                log_file.write(line)
+                log_file.flush()
+                print(f"[Job {job_id[:8]}] {line.rstrip()}", flush=True)
+
+                stripped = line.strip()
+                if stripped.startswith("Converting"):
+                    jobs[job_id]["progress"] = "Extracting audio (FFmpeg)..."
+                elif stripped.startswith("Transcribing"):
+                    jobs[job_id]["progress"] = "Transcribing audio (Whisper)..."
+                elif stripped.startswith("Sending transcript"):
+                    jobs[job_id]["progress"] = "Generating chapters (Mistral)..."
+                elif stripped.startswith("Splitting"):
+                    jobs[job_id]["progress"] = "Creating video clips..."
+                elif stripped.startswith("Requesting summary"):
+                    jobs[job_id]["progress"] = "Summarizing chapters (Mistral)..."
+                elif "Pipeline stopped" in stripped:
+                    jobs[job_id]["progress"] = stripped
+                elif "Pipeline finished" in stripped:
+                    jobs[job_id]["progress"] = "Pipeline finished!"
+
+            process.wait()
+
+            log_file.write(f"\n{'=' * 40}\n")
+            log_file.write(f"Exit code: {process.returncode}\n")
+
+        transcript_path = OUTPUT_FOLDER / f"{base_name}.mp3.vtt"
+        timestamps_path = OUTPUT_FOLDER / f"{base_name}_timestamps.txt"
+        summary_path = OUTPUT_FOLDER / f"{base_name}_summary.json"
+
+        has_transcript = transcript_path.exists() and transcript_path.stat().st_size > 0
+        has_timestamps = timestamps_path.exists() and timestamps_path.stat().st_size > 0
+        has_summary = summary_path.exists() and summary_path.stat().st_size > 0
+
+        if has_timestamps and has_summary:
             jobs[job_id]["status"] = "completed"
             jobs[job_id]["progress"] = "Processing complete!"
             jobs[job_id]["files"] = {
@@ -92,12 +146,32 @@ def _process_video(job_id, video_path, video_basename):
                 "summary": f"{base_name}_summary.json",
                 "video_basename": video_basename,
             }
+        elif has_transcript:
+            jobs[job_id]["status"] = "failed"
+            jobs[job_id]["progress"] = "Pipeline failed after transcription"
+            jobs[job_id]["error"] = (
+                "Transcription succeeded but chapter/summary generation failed. "
+                "Are the Mistral and Whisper model servers running? "
+                "Check health status and pipeline log."
+            )
         else:
             jobs[job_id]["status"] = "failed"
-            jobs[job_id]["error"] = result.stderr or result.stdout
+            log_tail = ""
+            if log_path.exists():
+                lines = log_path.read_text(encoding="utf-8").strip().split("\n")
+                log_tail = "\n".join(lines[-10:])
+            jobs[job_id]["error"] = (
+                "Pipeline produced no output files. "
+                "Are the Mistral and Whisper model servers running? "
+                f"Check health status. Last log lines:\n{log_tail}"
+            )
+            jobs[job_id]["progress"] = "Pipeline failed - no output produced"
+
     except Exception as e:
         jobs[job_id]["status"] = "failed"
         jobs[job_id]["error"] = str(e)
+        jobs[job_id]["progress"] = f"Pipeline error: {e}"
+        print(f"[Job {job_id[:8]}] Exception: {e}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +188,14 @@ def upload_video():
         return jsonify({"error": "No file selected"}), 400
     if not _allowed_file(file.filename):
         return jsonify({"error": f"File type not allowed. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"}), 400
+
+    mistral_status = _check_service("http://localhost:8000/health")
+    whisper_status = _check_service("http://localhost:8001/health")
+    if mistral_status != "ready" or whisper_status != "ready":
+        return jsonify({
+            "error": f"Model servers not ready yet. Mistral: {mistral_status}, Whisper: {whisper_status}. "
+                     "Please wait for models to finish loading and try again."
+        }), 503
 
     job_id = str(uuid.uuid4())
     filename = secure_filename(file.filename)
@@ -201,6 +283,19 @@ def list_jobs():
         jid: {"status": j["status"], "filename": j.get("filename"), "progress": j.get("progress")}
         for jid, j in jobs.items()
     }), 200
+
+
+@app.route("/api/log/<job_id>", methods=["GET"])
+def get_pipeline_log(job_id):
+    if job_id not in jobs:
+        return jsonify({"error": "Job not found"}), 404
+    log_file = jobs[job_id].get("log_file")
+    if not log_file:
+        return jsonify({"error": "No log file for this job"}), 404
+    log_path = OUTPUT_FOLDER / log_file
+    if not log_path.exists():
+        return jsonify({"error": "Log file not found"}), 404
+    return jsonify({"log": log_path.read_text(encoding="utf-8")}), 200
 
 
 # ---------------------------------------------------------------------------

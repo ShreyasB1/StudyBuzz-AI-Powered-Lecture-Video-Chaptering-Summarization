@@ -14,13 +14,14 @@
     .card h2 { font-size: 1.1rem; margin-bottom: 1rem; }
     label { display: block; font-weight: 500; margin-bottom: 0.5rem; font-size: 0.9rem; }
     input[type="file"] { margin-bottom: 1rem; }
-    button { background: #003057; color: #fff; border: none; padding: 0.6rem 1.5rem; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }
+    button { background: #003057; color: #fff; border: none; padding: 0.6rem 1.5rem; border-radius: 4px; cursor: pointer; font-size: 0.9rem; margin-right: 0.5rem; }
     button:hover { background: #00467a; }
     button:disabled { background: #999; cursor: not-allowed; }
-    .status { padding: 0.75rem; border-radius: 4px; font-size: 0.85rem; margin-top: 1rem; }
+    .status { padding: 0.75rem; border-radius: 4px; font-size: 0.85rem; margin-top: 1rem; word-break: break-word; }
     .status.info { background: #e8f0fe; color: #174ea6; }
     .status.success { background: #e6f4ea; color: #137333; }
     .status.error { background: #fce8e6; color: #c5221f; }
+    .status.warn { background: #fef7e0; color: #7c5e00; }
     .results { margin-top: 1rem; }
     .results h3 { font-size: 0.95rem; margin: 1rem 0 0.5rem; }
     .results pre { background: #f8f8f8; padding: 1rem; border-radius: 4px; overflow-x: auto; font-size: 0.8rem; white-space: pre-wrap; max-height: 400px; overflow-y: auto; }
@@ -29,13 +30,24 @@
     .chapter .title { font-weight: 600; margin-bottom: 0.25rem; }
     .chapter .summary { font-size: 0.85rem; color: #444; }
     .hidden { display: none; }
-    #health { font-size: 0.75rem; color: #999; margin-top: 0.5rem; }
+    .health-row { font-size: 0.85rem; margin-top: 0.5rem; }
+    .health-row .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+    .dot.green { background: #137333; }
+    .dot.red { background: #c5221f; }
+    .dot.gray { background: #999; }
+    .log-viewer { background: #1e1e1e; color: #d4d4d4; padding: 1rem; border-radius: 4px; font-family: monospace; font-size: 0.75rem; max-height: 300px; overflow-y: auto; white-space: pre-wrap; margin-top: 0.5rem; }
   </style>
 </head>
 <body>
   <div class="container">
     <h1>StudyBuzz</h1>
     <p class="subtitle">AI-Powered Lecture Video Chaptering &amp; Summarization</p>
+
+    <div class="card">
+      <h2>Service Health</h2>
+      <button onclick="checkHealth()">Check Status</button>
+      <div id="health"></div>
+    </div>
 
     <div class="card">
       <h2>Upload Video</h2>
@@ -49,17 +61,13 @@
     <div id="processingCard" class="card hidden">
       <h2>Processing Status</h2>
       <div id="processingStatus" class="status info">Waiting...</div>
+      <button onclick="viewLog()" style="margin-top:0.75rem; font-size:0.8rem; background:#555;">View Pipeline Log</button>
+      <div id="logViewer" class="log-viewer hidden"></div>
     </div>
 
     <div id="resultsCard" class="card hidden">
       <h2>Results</h2>
       <div id="resultsContent" class="results"></div>
-    </div>
-
-    <div class="card">
-      <h2>Service Health</h2>
-      <button onclick="checkHealth()">Check</button>
-      <div id="health"></div>
     </div>
   </div>
 
@@ -69,6 +77,29 @@
     let pollTimer = null;
 
     function api(path) { return BASE + path; }
+
+    async function checkHealth() {
+      const el = document.getElementById('health');
+      el.innerHTML = '<span style="color:#999">Checking...</span>';
+      try {
+        const res = await fetch(api('/api/health'));
+        const data = await res.json();
+        const dot = function(status) {
+          if (status === 'ready') return '<span class="dot green"></span>ready';
+          if (status === 'healthy') return '<span class="dot green"></span>healthy';
+          return '<span class="dot red"></span>' + (status || 'unknown');
+        };
+        el.innerHTML =
+          '<div class="health-row">' + dot(data.status) + ' &mdash; StudyBuzz App</div>' +
+          '<div class="health-row">' + dot(data.mistral) + ' &mdash; Mistral LLM (port 8000)</div>' +
+          '<div class="health-row">' + dot(data.whisper) + ' &mdash; Whisper STT (port 8001)</div>';
+        if (data.mistral !== 'ready' || data.whisper !== 'ready') {
+          el.innerHTML += '<div class="status warn" style="margin-top:0.5rem">Models are still loading. Video processing will not work until both show "ready". Mistral takes ~20 min, Whisper ~2 min.</div>';
+        }
+      } catch (e) {
+        el.innerHTML = '<div class="status error">Error checking health: ' + e.message + '</div>';
+      }
+    }
 
     async function uploadVideo() {
       const fileInput = document.getElementById('videoFile');
@@ -100,6 +131,7 @@
           statusEl.className = 'status success';
           document.getElementById('processingCard').classList.remove('hidden');
           document.getElementById('resultsCard').classList.add('hidden');
+          document.getElementById('logViewer').classList.add('hidden');
           startPolling();
         } else {
           statusEl.textContent = 'Error: ' + (data.error || 'Upload failed');
@@ -126,9 +158,6 @@
         const res = await fetch(api('/api/status/' + currentJobId));
         const data = await res.json();
 
-        statusEl.textContent = (data.status || 'unknown') + ' — ' + (data.progress || '');
-        statusEl.className = 'status info';
-
         if (data.status === 'completed') {
           clearInterval(pollTimer);
           statusEl.textContent = 'Processing complete!';
@@ -136,11 +165,29 @@
           fetchResults();
         } else if (data.status === 'failed') {
           clearInterval(pollTimer);
-          statusEl.textContent = 'Processing failed: ' + (data.error || 'Unknown error');
+          statusEl.innerHTML = '<strong>Processing failed</strong><br>' + (data.error || 'Unknown error').replace(/\n/g, '<br>');
           statusEl.className = 'status error';
+        } else {
+          statusEl.textContent = (data.progress || data.status || 'Processing...');
+          statusEl.className = 'status info';
         }
       } catch (e) {
         statusEl.textContent = 'Polling error: ' + e.message;
+      }
+    }
+
+    async function viewLog() {
+      if (!currentJobId) return;
+      const logEl = document.getElementById('logViewer');
+      logEl.classList.remove('hidden');
+      logEl.textContent = 'Loading log...';
+      try {
+        const res = await fetch(api('/api/log/' + currentJobId));
+        const data = await res.json();
+        logEl.textContent = data.log || 'No log content.';
+        logEl.scrollTop = logEl.scrollHeight;
+      } catch (e) {
+        logEl.textContent = 'Error loading log: ' + e.message;
       }
     }
 
@@ -159,7 +206,7 @@
         if (data.timestamps && data.timestamps.length) {
           html += '<h3>Chapters</h3>';
           data.timestamps.forEach(function(ch) {
-            html += '<div class="chapter"><span class="time">' + ch.time + '</span> — <span class="title">' + ch.title + '</span></div>';
+            html += '<div class="chapter"><span class="time">' + ch.time + '</span> &mdash; <span class="title">' + ch.title + '</span></div>';
           });
         }
 
@@ -168,7 +215,7 @@
           data.summary.forEach(function(item) {
             Object.keys(item).forEach(function(time) {
               Object.keys(item[time]).forEach(function(title) {
-                html += '<div class="chapter"><span class="time">' + time + '</span> — <span class="title">' + title + '</span><p class="summary">' + item[time][title] + '</p></div>';
+                html += '<div class="chapter"><span class="time">' + time + '</span> &mdash; <span class="title">' + title + '</span><p class="summary">' + item[time][title] + '</p></div>';
               });
             });
           });
@@ -185,16 +232,7 @@
       }
     }
 
-    async function checkHealth() {
-      const el = document.getElementById('health');
-      try {
-        const res = await fetch(api('/api/health'));
-        const data = await res.json();
-        el.textContent = 'App: ' + data.status + ' | Mistral: ' + (data.mistral || 'unknown') + ' | Whisper: ' + (data.whisper || 'unknown');
-      } catch (e) {
-        el.textContent = 'Error: ' + e.message;
-      }
-    }
+    checkHealth();
   </script>
 </body>
 </html>

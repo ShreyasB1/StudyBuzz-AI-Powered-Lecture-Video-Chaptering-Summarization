@@ -102,6 +102,33 @@ echo "Access via OnDemand: https://ondemand-ice.pace.gatech.edu/node/${HOSTNAME}
 # ---------------------------------------------------------------------------
 # Start Mistral vLLM container (port 8000, all GPUs, ~90% VRAM)
 # ---------------------------------------------------------------------------
+echo "=== HuggingFace Path Diagnostics ==="
+echo "  Configured path: '${HUGGINGFACE_CACHE_PATH}'"
+if [ -n "${HUGGINGFACE_CACHE_PATH}" ]; then
+  if [ -d "${HUGGINGFACE_CACHE_PATH}" ]; then
+    echo "  Path EXISTS and is a directory."
+    echo "  Contents:"
+    ls -la "${HUGGINGFACE_CACHE_PATH}/" 2>&1 | head -20
+    if [ -d "${HUGGINGFACE_CACHE_PATH}/hub" ]; then
+      echo "  hub/ subdirectory contents:"
+      ls "${HUGGINGFACE_CACHE_PATH}/hub/" 2>&1 | head -20
+    else
+      echo "  WARNING: No hub/ subdirectory found."
+    fi
+  elif [ -L "${HUGGINGFACE_CACHE_PATH}" ]; then
+    echo "  Path is a SYMLINK but target does not exist."
+    ls -la "${HUGGINGFACE_CACHE_PATH}" 2>&1
+  else
+    echo "  Path does NOT exist."
+    PARENT_DIR=$(dirname "${HUGGINGFACE_CACHE_PATH}")
+    echo "  Parent directory '${PARENT_DIR}':"
+    ls -la "${PARENT_DIR}/" 2>&1 | head -20 || echo "  Parent also does not exist."
+  fi
+else
+  echo "  Path is EMPTY (not set)."
+fi
+echo "=== End Path Diagnostics ==="
+
 if [ -n "${HUGGINGFACE_CACHE_PATH}" ] && [ -d "${HUGGINGFACE_CACHE_PATH}" ]; then
   echo "TIMING - Starting Mistral vLLM server at: $(date)"
 

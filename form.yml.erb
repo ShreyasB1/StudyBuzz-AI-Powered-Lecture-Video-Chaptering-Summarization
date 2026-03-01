@@ -2,23 +2,17 @@ title: StudyBuzz
 cluster: "ice-rh9"
 attributes:
   huggingface_cache_path:
-    widget: "path_selector"
+    widget: "text_field"
     label: "HuggingFace Model Cache Path"
-    directory: "/storage"
     required: false
-    readonly: false
-    show_hidden: false
     value: "/storage/ice-shared/vip-vp4/Spring2026/SB-V-1a/huggingface"
-    favorites:
-      - "/storage/ice-shared/vip-vp4/Spring2026/SB-V-1a/huggingface"
-      - "<%= CurrentUser.home %>"
-    help: "Path to the HuggingFace model cache containing Mistral-Large-3 and Whisper weights. Leave default if models are not yet downloaded -- the web UI will still start."
+    help: "Full path to the HuggingFace model cache directory. Must contain models--mistralai--Mistral-Large-3-675B-Instruct-2512 and models--openai--whisper-large-v3 inside a hub/ subdirectory. The web UI still starts if the path is wrong, but video processing will not work."
   hf_token:
     widget: "text_field"
     label: "HuggingFace Token"
     required: false
     value: ""
-    help: "Your HuggingFace API token (starts with hf_). Required to download gated models like Mistral-Large-3. Leave blank if models are already cached."
+    help: "Your full HuggingFace API token including the hf_ prefix (e.g. hf_abc123...). Required to download gated models like Mistral-Large-3. Leave blank if models are already cached."
   qos:
     widget: select
     label: "Quality of Service"
