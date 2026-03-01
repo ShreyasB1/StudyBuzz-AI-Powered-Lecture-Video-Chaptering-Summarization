@@ -1,8 +1,8 @@
-# StudyBuzz
+# StudyBuzz (M-SB-TUT-Stud-1)
 
 **AI-Powered Lecture Video Chaptering & Summarization**
 
-StudyBuzz transforms hour-long lecture recordings into navigable, summarized content. Upload a video, get chapters and summaries—automatically.
+StudyBuzz transforms hour-long lecture recordings into navigable, summarized content. Upload a video, get chapters and summaries — automatically.
 
 ---
 
@@ -17,6 +17,7 @@ StudyBuzz transforms hour-long lecture recordings into navigable, summarized con
 ---
 
 ## Architecture
+
 ```
 ┌─────────────────────────────────────────────────────┐
 │         FRONTEND (Minimal HTML served by Flask)     │
@@ -74,29 +75,18 @@ StudyBuzz transforms hour-long lecture recordings into navigable, summarized con
 
 ---
 
-## Installation
+## VLLM Setup
 
-### 1. Clone the Repository
+VLLM is used for running the large language model and the transcription model. We use podman to run the VLLM servers to avoid dependency issues.
+
+### Mistral-Large-3 Server
+
 ```bash
-git clone https://github.gatech.edu/OLIVES-VIP-VP4-AIMN/M-SB-TUT-Stud-1.git
-```
-
-### 2. Backend Setup
-```bash
-pip install -r requirements.txt
-pip install -r requirements_backend.txt
-```
-
-### 3. Start Mistral vLLM Server
-```bash
-mkdir -p output/video
-
 podman run --device nvidia.com/gpu=all \
   --security-opt=label=disable \
   --ipc=host \
   -p 8000:8000 \
-  -v /path/to/huggingface:/root/.cache/huggingface \
-  -v $(pwd)/output/video:/root/video \
+  -v /storage/ice-shared/vip-vp4/Spring2026/SB-V-1a/huggingface:/root/.cache/huggingface \
   --env "HUGGING_FACE_HUB_TOKEN=<YOUR_HF_TOKEN>" \
   --env "NCCL_DEBUG=INFO" \
   --env "OMP_NUM_THREADS=16" \
@@ -114,20 +104,20 @@ podman run --device nvidia.com/gpu=all \
   --tokenizer-mode mistral \
   --config-format mistral \
   --enable-auto-tool-choice \
-  --tool-call-parser mistral \
-  --allowed-local-media-path /root/video \
-  --host 0.0.0.0 \
-  --port 8000
+  --tool-call-parser mistral
 ```
+
+The Mistral VLLM server will be accessible at `http://localhost:8000`.
 
 > **Note**: Mistral takes ~20 minutes to load the model.
 
-### 4. Start Whisper vLLM Server
+### Whisper Server
+
 ```bash
 podman run --device nvidia.com/gpu=all \
   --entrypoint /bin/bash \
   --security-opt=label=disable \
-  -v /path/to/huggingface:/root/.cache/huggingface \
+  -v /storage/ice-shared/vip-vp4/Spring2026/SB-V-1a/huggingface:/root/.cache/huggingface \
   -p 8001:8000 \
   --ipc=host \
   --env "HUGGING_FACE_HUB_TOKEN=<YOUR_HF_TOKEN>" \
@@ -146,9 +136,33 @@ podman run --device nvidia.com/gpu=all \
     --port 8000"
 ```
 
+The Whisper VLLM server will be accessible at `http://localhost:8001`.
+
 > **Note**: Whisper loads in ~2 minutes.
 
-### 5. Start the Application
+The commands must be run in the output directory (create it if it does not exist) where the `timeStampGen.py` script will output the intermediate files. There must also be a `video/` directory in the output directory where the input video is stored.
+
+---
+
+## Installation
+
+### 1. Clone the Repository
+
+```bash
+git clone https://github.gatech.edu/OLIVES-VIP-VP4-AIMN/M-SB-TUT-Stud-1.git
+```
+
+### 2. Python Dependencies
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+pip install -r requirements_backend.txt
+```
+
+### 3. Start the Application
+
 ```bash
 python app.py
 ```
@@ -157,30 +171,29 @@ The application will be available at `http://localhost:5000`.
 
 ---
 
-### Command Line (Pipeline Only)
+## Video Summary Pipeline (CLI)
+
+The main code for the video summary pipeline is in `timeStampGen.py`. This script takes a video file as input and outputs a text summary of the video. It uses the VLLM server to run the Mistral model for video understanding. The VLLM server must be running before executing this script.
+
+Run:
 ```bash
-python timeStampGen.py <video_file> -o <output_directory>
-
-# Example
-python timeStampGen.py lecture.mp4 -o output
+timeStampGen.py --help
 ```
+to see the usage of the script. The main arguments are:
 
-#### CLI Options
 ```
 usage: timeStampGen.py [-h] [-d INPUT_DIR] [-o OUTPUT_DIR] [input_file]
+```
 
-positional arguments:
-  input_file            Path to video file
-
-optional arguments:
-  -h, --help            Show help message
-  -d, --input-dir       Process all videos in directory
-  -o, --output-dir      Output directory (default: ./output)
+A sample command to run the script is as follows:
+```bash
+python timeStampGen.py lecture.mp4
 ```
 
 ---
 
 ## Project Structure
+
 ```
 SB-V-1a/
 ├── app.py                      # Flask backend server
@@ -209,6 +222,8 @@ SB-V-1a/
 └── output/                     # Generated artifacts
 ```
 
+---
+
 ## Deploying on PACE Sandbox (Open OnDemand)
 
 StudyBuzz can be deployed as an interactive app on Georgia Tech's PACE Sandbox through Open OnDemand. This containerizes the application and makes it launchable from a web dashboard with automatic GPU allocation.
@@ -230,7 +245,6 @@ ssh <your-gt-username>@login-ice.pace.gatech.edu
 cd ~/ondemand/dev
 git clone https://github.gatech.edu/OLIVES-VIP-VP4-AIMN/M-SB-TUT-Stud-1.git SB-V-1a
 cd SB-V-1a
-git checkout sandbox
 ```
 
 ### Step 2: Pre-build container images
@@ -255,7 +269,7 @@ This will:
 2. Navigate to **Develop** (top menu) and find **StudyBuzz**
 3. Fill out the launch form:
    - **HuggingFace Model Cache Path** — directory containing the model weights (default: `/storage/ice-shared/vip-vp4/Spring2026/SB-V-1a/huggingface`)
-   - **HuggingFace Token** — your HF token (starts with `hf_`), needed for gated models
+   - **HuggingFace Token** — your full HF token including the `hf_` prefix, needed for gated models
    - **Node Type** — select **H200 HGX** (recommended)
    - **GPUs** — set to **8**
    - **Cores** — 8 recommended
@@ -285,22 +299,6 @@ Compute Node (H200 HGX, 8 GPUs)
     ▼
 User accesses: https://ondemand-ice.pace.gatech.edu/node/<host>/<port>/
 ```
-
-The deployment is managed by these files:
-
-| File | Purpose |
-|------|---------|
-| `Dockerfile` | Builds the StudyBuzz app image (Python/Flask + FFmpeg) |
-| `manifest.yml` | Registers the app with Open OnDemand |
-| `form.yml.erb` | Defines the launch form (GPU count, paths, HF token) |
-| `submit.yml.erb` | Configures SLURM job parameters |
-| `view.html.erb` | Renders the "Connect" button in the dashboard |
-| `template/before.sh.erb` | Allocates ports and exports environment variables |
-| `template/script.sh.erb` | Main script: creates Podman pod, starts 3 containers |
-| `template/after.sh` | Waits for the app to become responsive |
-| `template/clean.sh` | Cleans up all 3 containers when the job ends |
-| `Makefile` | Helper targets for manual container management |
-| `install.sh` | One-time image pre-build script |
 
 ### Updating the deployed app
 
