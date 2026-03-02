@@ -449,6 +449,11 @@ def _extract_all_scene_frames(video_path: str, temp_dir: str) -> list[dict]:
         "ffmpeg",
         "-i",
         video_path,
+        "-an",  # Disable audio processing to speed up extraction
+        "-threads",
+        "0",  # Use all available cores
+        "-preset",
+        "ultrafast",  # Maximize encoding speed
         "-vf",
         "select='eq(n\\,0)+gt(scene\\,0.05)',scale=720:-1",
         "-fps_mode",
