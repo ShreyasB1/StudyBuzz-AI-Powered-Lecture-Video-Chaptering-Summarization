@@ -35,11 +35,26 @@ def generate_vtt(audio_path, host_ip, port, model_name, language):
 
         print("WEBVTT\n")
 
-        if hasattr(transcription, 'segments'):
-            for segment in transcription.segments:
-                start = getattr(segment, 'start', 0.0)
-                end = getattr(segment, 'end', 0.0)
-                text = getattr(segment, 'text', "")
+        # Extract segments robustly (OpenAI client versions can return dicts or Pydantic models)
+        segments = []
+        if isinstance(transcription, dict):
+            segments = transcription.get('segments', [])
+        elif hasattr(transcription, 'segments') and transcription.segments:
+            segments = transcription.segments
+        elif hasattr(transcription, 'model_dump'):
+            dump = transcription.model_dump()
+            segments = dump.get('segments', [])
+
+        if segments:
+            for segment in segments:
+                if isinstance(segment, dict):
+                    start = segment.get('start', 0.0)
+                    end = segment.get('end', 0.0)
+                    text = segment.get('text', "")
+                else:
+                    start = getattr(segment, 'start', 0.0)
+                    end = getattr(segment, 'end', 0.0)
+                    text = getattr(segment, 'text', "")
                 
                 vtt_start = format_timestamp(start)
                 vtt_end = format_timestamp(end)
@@ -47,7 +62,15 @@ def generate_vtt(audio_path, host_ip, port, model_name, language):
                 print(f"{vtt_start} --> {vtt_end}")
                 print(f"{text.strip()}\n")
         else:
-            print("[ERROR] Response did not contain segments.", file=sys.stderr)
+            print("[WARNING] Response did not contain segments. The server might not support segment-level timestamps.", file=sys.stderr)
+            text_content = ""
+            if isinstance(transcription, dict):
+                text_content = transcription.get('text', str(transcription))
+            elif hasattr(transcription, 'text'):
+                text_content = transcription.text
+            else:
+                text_content = str(transcription)
+            print(f"00:00:00.000 --> 00:00:00.000\n{text_content.strip()}\n")
 
     except Exception as e:
         print(f"\n[CRITICAL ERROR] Could not transcribe.", file=sys.stderr)
