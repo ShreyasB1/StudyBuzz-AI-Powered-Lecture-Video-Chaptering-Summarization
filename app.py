@@ -15,11 +15,7 @@ import urllib.error
 BASE_DIR = Path(__file__).parent.absolute()
 STATIC_DIR = BASE_DIR / "static"
 
-app = Flask(
-    __name__,
-    static_folder=str(STATIC_DIR),
-    static_url_path="/static"
-)
+app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 
@@ -178,6 +174,7 @@ def _process_video(job_id, video_path, video_basename):
 # API endpoints
 # ---------------------------------------------------------------------------
 
+
 @app.route("/api/upload", methods=["POST"])
 def upload_video():
     if "video" not in request.files:
@@ -187,15 +184,27 @@ def upload_video():
     if file.filename == "":
         return jsonify({"error": "No file selected"}), 400
     if not _allowed_file(file.filename):
-        return jsonify({"error": f"File type not allowed. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"}), 400
+        return (
+            jsonify(
+                {
+                    "error": f"File type not allowed. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
+                }
+            ),
+            400,
+        )
 
     mistral_status = _check_service("http://localhost:8000/health")
     whisper_status = _check_service("http://localhost:8001/health")
     if mistral_status != "ready" or whisper_status != "ready":
-        return jsonify({
-            "error": f"Model servers not ready yet. Mistral: {mistral_status}, Whisper: {whisper_status}. "
-                     "Please wait for models to finish loading and try again."
-        }), 503
+        return (
+            jsonify(
+                {
+                    "error": f"Model servers not ready yet. Mistral: {mistral_status}, Whisper: {whisper_status}. "
+                    "Please wait for models to finish loading and try again."
+                }
+            ),
+            503,
+        )
 
     job_id = str(uuid.uuid4())
     filename = secure_filename(file.filename)
@@ -208,10 +217,21 @@ def upload_video():
         "progress": "Video uploaded successfully",
     }
 
-    thread = threading.Thread(target=_process_video, args=(job_id, video_path, filename), daemon=True)
+    thread = threading.Thread(
+        target=_process_video, args=(job_id, video_path, filename), daemon=True
+    )
     thread.start()
 
-    return jsonify({"job_id": job_id, "filename": filename, "message": "Video uploaded and processing started"}), 202
+    return (
+        jsonify(
+            {
+                "job_id": job_id,
+                "filename": filename,
+                "message": "Video uploaded and processing started",
+            }
+        ),
+        202,
+    )
 
 
 @app.route("/api/status/<job_id>", methods=["GET"])
@@ -269,20 +289,34 @@ def stream_video(job_id):
 
 @app.route("/api/health", methods=["GET"])
 def health_check():
-    return jsonify({
-        "status": "healthy",
-        "service": "studybuzz",
-        "mistral": _check_service("http://localhost:8000/health"),
-        "whisper": _check_service("http://localhost:8001/health"),
-    }), 200
+    return (
+        jsonify(
+            {
+                "status": "healthy",
+                "service": "studybuzz",
+                "mistral": _check_service("http://localhost:8000/health"),
+                "whisper": _check_service("http://localhost:8001/health"),
+            }
+        ),
+        200,
+    )
 
 
 @app.route("/api/jobs", methods=["GET"])
 def list_jobs():
-    return jsonify({
-        jid: {"status": j["status"], "filename": j.get("filename"), "progress": j.get("progress")}
-        for jid, j in jobs.items()
-    }), 200
+    return (
+        jsonify(
+            {
+                jid: {
+                    "status": j["status"],
+                    "filename": j.get("filename"),
+                    "progress": j.get("progress"),
+                }
+                for jid, j in jobs.items()
+            }
+        ),
+        200,
+    )
 
 
 @app.route("/api/log/<job_id>", methods=["GET"])
@@ -301,6 +335,7 @@ def get_pipeline_log(job_id):
 # ---------------------------------------------------------------------------
 # Frontend serving (single-page static HTML)
 # ---------------------------------------------------------------------------
+
 
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
