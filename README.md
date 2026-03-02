@@ -12,6 +12,7 @@ StudyBuzz transforms hour-long lecture recordings into navigable, summarized con
 - **Smart Chapters** — Mistral-Large-3 detects topic transitions and generates meaningful segment markers
 - **Scene Detection** — FFmpeg extracts key frames at scene changes for visual context
 - **AI Summaries** — Each chapter receives a concise summary using multimodal LLM analysis (text + frames)
+- **Database Tracking** — PostgreSQL with pgvector stores video metadata and chapter embeddings for duplicate detection and similarity search
 - **Supports Multiple Formats** — MP4, MKV, MOV, AVI, WEBM, MPEG
 
 ---
@@ -32,16 +33,17 @@ StudyBuzz transforms hour-long lecture recordings into navigable, summarized con
 │  - REST API endpoints (/api/*)                      │
 │  - File management (uploads/output)                 │
 │  - Job orchestration (background threads)           │
+│  - Database integration (video tracking)            │
 │  - Static file serving                              │
 └─────────────────────────────────────────────────────┘
-                        ↕ Subprocess / HTTP calls
-┌─────────────────────────────────────────────────────┐
-│      PROCESSING PIPELINE (timeStampGen.py)          │
-│  - FFmpeg (audio extraction, scene detection)       │
-│  - Whisper vLLM API (speech transcription, :8001)   │
-│  - Mistral-Large-3 vLLM API (chapters + summaries,  │
-│    :8000)                                           │
-└─────────────────────────────────────────────────────┘
+       ↕ Subprocess / HTTP calls              ↕ SQL
+┌──────────────────────────────┐    ┌──────────────────┐
+│   PROCESSING PIPELINE        │    │   PostgreSQL     │
+│   (timeStampGen.py)          │    │   + pgvector     │
+│  - FFmpeg                    │    │  - Video records │
+│  - Whisper vLLM (:8001)      │    │  - Embeddings    │
+│  - Mistral-Large-3 (:8000)   │    │  - Deduplication │
+└──────────────────────────────┘    └──────────────────┘
 ```
 
 ---
@@ -224,94 +226,65 @@ SB-V-1a/
 
 ---
 
-## Deploying on PACE Sandbox (Open OnDemand)
+## Database
 
-StudyBuzz can be deployed as an interactive app on Georgia Tech's PACE Sandbox through Open OnDemand. This containerizes the application and makes it launchable from a web dashboard with automatic GPU allocation.
+StudyBuzz uses PostgreSQL with the pgvector extension to track processed videos and store chapter embeddings.
 
-### Prerequisites
+### Database Schema
 
-- SSH access to PACE (`login-ice.pace.gatech.edu`)
-- Podman available on the cluster (pre-installed on PACE)
-- HuggingFace token with access to Mistral-Large-3 (gated model)
-- Model weights cached at a shared path (e.g., `/storage/ice-shared/vip-vp4/Spring2026/SB-V-1a/huggingface`)
+**`lecture_videos` table:**
+- Stores metadata for each processed video
+- Uses SHA256 hash for deduplication
+- Tracks processing status
 
-### Step 1: Clone into the OnDemand dev directory
+**`chapter_embeddings` table:**
+- Stores vector embeddings for chapters (1536 dimensions)
+- Enables semantic similarity search across chapters
+- Uses IVFFlat index for fast approximate nearest neighbor queries
 
-Open OnDemand discovers apps placed in `~/ondemand/dev/` in your PACE file directory. Clone or copy the repository there:
+### Database Endpoints
 
+**Check database health:**
 ```bash
-ssh <your-gt-username>@login-ice.pace.gatech.edu
-
-cd ~/ondemand/dev
-git clone https://github.gatech.edu/OLIVES-VIP-VP4-AIMN/M-SB-TUT-Stud-1.git SB-V-1a
-cd SB-V-1a
+curl http://localhost:5000/api/health
 ```
 
-### Step 2: Pre-build container images
-
-From inside the app directory, run the install script to build the StudyBuzz Docker image and pull both vLLM images. Fix CRLF line endings first if the code was edited on Windows.
-
+**List all processed videos:**
 ```bash
-sed -i 's/\r$//' install.sh
-
-bash install.sh
+curl http://localhost:5000/api/database/videos
 ```
 
-This will:
-1. Fix CRLF line endings on all deployment scripts
-2. Build the StudyBuzz app image (Python + FFmpeg)
-3. Pull the Mistral vLLM image (`vllm-openai:qwen3_5-x86_64-cu129`)
-4. Pull the Whisper vLLM image (`vllm-openai:v0.14.0`)
+### Inspecting the Database
 
-### Step 3: Launch from Open OnDemand
-
-1. Go to **https://ondemand-ice.pace.gatech.edu**
-2. Navigate to **Develop** (top menu) and find **StudyBuzz**
-3. Fill out the launch form:
-   - **HuggingFace Model Cache Path** — directory containing the model weights (default: `/storage/ice-shared/vip-vp4/Spring2026/SB-V-1a/huggingface`)
-   - **HuggingFace Token** — your full HF token including the `hf_` prefix, needed for gated models
-   - **Node Type** — select **H200 HGX** (recommended)
-   - **GPUs** — set to **8**
-   - **Cores** — 8 recommended
-   - **Memory Per Core** — 16 GB recommended
-   - Set your desired **job duration**
-4. Click **Launch**
-
-### Step 4: Connect
-
-Once the SLURM job starts and containers are ready, a **Connect to StudyBuzz** button appears. Click it to open the web UI.
-
-> **Startup time:** The web interface is accessible within minutes. Mistral takes ~20 minutes to load, Whisper takes ~2 minutes. Video processing will not work until both models finish loading. Use the **Service Health** check button in the UI to monitor readiness.
-
-### How it works
-
-```
-Open OnDemand Dashboard
-    │
-    ▼ (SLURM job submission)
-Compute Node (H200 HGX, 8 GPUs)
-    │
-    ├── Podman Pod (shared localhost network)
-    │     ├── studybuzz-app container     ← Flask + FFmpeg (port 5000)
-    │     ├── mistral-vllm container      ← Mistral-Large-3-675B (port 8000, 90% VRAM)
-    │     └── whisper-vllm container      ← Whisper-large-v3 (port 8001, 9% VRAM)
-    │
-    ▼
-User accesses: https://ondemand-ice.pace.gatech.edu/node/<host>/<port>/
-```
-
-### Updating the deployed app
-
-After making code changes, push to GitHub and pull on PACE:
-
+**On your local machine (with `make run-db`):**
 ```bash
-cd ~/ondemand/dev/SB-V-1a
-git pull
-sed -i 's/\r$//' install.sh
-bash install.sh   # rebuild the Docker image with your changes
+# Using psql
+psql -h localhost -p 5432 -U postgres -d vip_db
+
+# List all videos
+SELECT video_name, done_processing, video_date FROM lecture_videos;
+
+# Count chapter embeddings
+SELECT COUNT(*) FROM chapter_embeddings;
 ```
 
-Then launch a new session from the OnDemand dashboard.
+**On PACE (during an active session):**
+```bash
+# SSH into the compute node
+# Then connect to the PostgreSQL container
+podman exec -it studybuzz-postgres-<SLURM_JOB_ID> psql -U postgres -d vip_db
+
+# Run SQL queries
+\dt                    # List tables
+\d lecture_videos      # Describe table schema
+SELECT * FROM lecture_videos LIMIT 5;
+```
+
+### Database Features
+
+1. **Duplicate Detection** — Videos are hashed on upload; previously processed videos skip re-processing
+2. **Processing History** — All videos and their processing status are permanently stored
+3. **Future: Semantic Search** — Chapter embeddings enable finding similar content across videos
 
 ---
 

@@ -19,7 +19,7 @@ RUN pip install --upgrade pip && \
     pip install -r requirements.txt && \
     pip install -r requirements_backend.txt
 
-COPY app.py timeStampGen.py vllm_to_vtt.py ./
+COPY app.py timeStampGen.py vllm_to_vtt.py init_db.py db_helper.py ./
 COPY static/ static/
 
 RUN mkdir -p uploads output/video

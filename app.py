@@ -12,6 +12,14 @@ import threading
 import urllib.request
 import urllib.error
 
+# Import database helpers (optional - only if DB is available)
+try:
+    import db_helper
+    DB_AVAILABLE = True
+except Exception as e:
+    print(f"Database not available: {e}")
+    DB_AVAILABLE = False
+
 BASE_DIR = Path(__file__).parent.absolute()
 STATIC_DIR = BASE_DIR / "static"
 
@@ -69,6 +77,29 @@ def _check_service(url):
 def _process_video(job_id, video_path, video_basename):
     base_name = os.path.splitext(video_basename)[0]
     log_path = OUTPUT_FOLDER / f"{job_id}_pipeline.log"
+    
+    video_hash = None
+    if DB_AVAILABLE:
+        try:
+            video_hash = db_helper.compute_video_hash(str(video_path))
+            # Check if video already processed
+            existing = db_helper.get_video_by_hash(video_hash)
+            if existing and existing.get("done_processing"):
+                print(f"[Job {job_id[:8]}] Video already processed (hash: {video_hash[:8]}...)")
+                jobs[job_id]["status"] = "completed"
+                jobs[job_id]["progress"] = "Video already processed (found in database)"
+                return
+            # Insert/update video record
+            db_helper.insert_video(
+                video_hash=video_hash,
+                folder_path=str(UPLOAD_FOLDER),
+                video_name=video_basename,
+                note=f"Job ID: {job_id}"
+            )
+            print(f"[Job {job_id[:8]}] Video registered in database (hash: {video_hash[:8]}...)")
+        except Exception as e:
+            print(f"[Job {job_id[:8]}] Database error: {e}")
+            video_hash = None
 
     try:
         jobs[job_id]["status"] = "processing"
@@ -146,6 +177,15 @@ def _process_video(job_id, video_path, video_basename):
                 "summary": f"{base_name}_summary.json",
                 "video_basename": video_basename,
             }
+            
+            # Mark video as processed in database
+            if DB_AVAILABLE and video_hash:
+                try:
+                    db_helper.mark_video_processed(video_hash, note="Processing completed successfully")
+                    print(f"[Job {job_id[:8]}] Marked as processed in database")
+                except Exception as e:
+                    print(f"[Job {job_id[:8]}] Failed to update database: {e}")
+                    
         elif has_transcript:
             jobs[job_id]["status"] = "failed"
             jobs[job_id]["progress"] = "Pipeline failed after transcription"
@@ -269,12 +309,37 @@ def stream_video(job_id):
 
 @app.route("/api/health", methods=["GET"])
 def health_check():
-    return jsonify({
+    health_status = {
         "status": "healthy",
         "service": "studybuzz",
         "mistral": _check_service("http://localhost:8000/health"),
         "whisper": _check_service("http://localhost:8001/health"),
-    }), 200
+        "database": "not available"
+    }
+    
+    if DB_AVAILABLE:
+        try:
+            with db_helper.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+            health_status["database"] = "connected"
+        except Exception as e:
+            health_status["database"] = f"error: {str(e)}"
+    
+    return jsonify(health_status), 200
+
+
+@app.route("/api/database/videos", methods=["GET"])
+def list_database_videos():
+    """List all videos stored in the database."""
+    if not DB_AVAILABLE:
+        return jsonify({"error": "Database not available"}), 503
+    
+    try:
+        videos = db_helper.list_all_videos()
+        return jsonify({"videos": videos, "count": len(videos)}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/jobs", methods=["GET"])

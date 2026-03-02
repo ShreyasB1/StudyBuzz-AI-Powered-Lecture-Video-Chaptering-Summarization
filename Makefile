@@ -1,4 +1,4 @@
-.PHONY: build-app run-app run-mistral run-whisper deploy clean help
+.PHONY: build-app run-app run-mistral run-whisper run-db deploy clean help
 
 APP_IMAGE ?= studybuzz-app
 APP_CONTAINER ?= studybuzz-app
@@ -6,6 +6,11 @@ APP_PORT ?= 5000
 
 MISTRAL_CONTAINER ?= studybuzz-mistral
 WHISPER_CONTAINER ?= studybuzz-whisper
+DB_CONTAINER ?= studybuzz-postgres
+DB_PORT ?= 5432
+DB_NAME ?= vip_db
+DB_USER ?= postgres
+DB_PASSWORD ?= postgres
 HUGGINGFACE_CACHE_PATH ?= $(HOME)/huggingface
 HF_TOKEN ?=
 NUM_GPUS ?= 8
@@ -16,6 +21,7 @@ help:
 	@echo "Targets:"
 	@echo "  make build-app     - Build the StudyBuzz Docker image"
 	@echo "  make run-app       - Build and run the StudyBuzz container"
+	@echo "  make run-db        - Run the PostgreSQL database container"
 	@echo "  make run-mistral   - Run the Mistral vLLM container"
 	@echo "  make run-whisper   - Run the Whisper vLLM container"
 	@echo "  make deploy        - Create pod and start all containers"
@@ -35,6 +41,20 @@ run-app: build-app
 	  --name $(APP_CONTAINER) \
 	  $(APP_IMAGE)
 	@echo "StudyBuzz started on port $(APP_PORT)"
+
+run-db:
+	@echo "Starting PostgreSQL database container..."
+	@mkdir -p $(PWD)/postgres-data
+	podman run -d \
+	  -p $(DB_PORT):5432 \
+	  -v $(PWD)/postgres-data:/var/lib/postgresql/data:Z \
+	  --env "POSTGRES_DB=$(DB_NAME)" \
+	  --env "POSTGRES_USER=$(DB_USER)" \
+	  --env "POSTGRES_PASSWORD=$(DB_PASSWORD)" \
+	  --name $(DB_CONTAINER) \
+	  docker.io/library/postgres:16-alpine
+	@echo "PostgreSQL started on port $(DB_PORT)"
+	@echo "Database: $(DB_NAME), User: $(DB_USER)"
 
 run-mistral:
 	@echo "Starting Mistral vLLM container..."
@@ -99,8 +119,20 @@ run-whisper:
 deploy: build-app
 	@echo "Creating pod for shared networking..."
 	@podman pod exists studybuzz-pod || podman pod create --name studybuzz-pod -p $(APP_PORT):5000
+	@echo "Starting PostgreSQL in pod..."
+	@mkdir -p postgres-data output/video uploads
+	@podman ps -a --filter "name=^$(DB_CONTAINER)$$" --format "{{.Names}}" | grep -q $(DB_CONTAINER) && podman rm -f $(DB_CONTAINER) || true
+	podman run -d \
+	  --pod studybuzz-pod \
+	  --name $(DB_CONTAINER) \
+	  -v $(PWD)/postgres-data:/var/lib/postgresql/data:Z \
+	  --env "POSTGRES_DB=$(DB_NAME)" \
+	  --env "POSTGRES_USER=$(DB_USER)" \
+	  --env "POSTGRES_PASSWORD=$(DB_PASSWORD)" \
+	  docker.io/library/postgres:16-alpine
+	@echo "Waiting for PostgreSQL to be ready..."
+	@sleep 5
 	@echo "Starting Mistral vLLM in pod..."
-	@mkdir -p output/video uploads
 	@podman ps -a --filter "name=^$(MISTRAL_CONTAINER)$$" --format "{{.Names}}" | grep -q $(MISTRAL_CONTAINER) && podman rm -f $(MISTRAL_CONTAINER) || true
 	podman run -d \
 	  --pod studybuzz-pod \
@@ -166,12 +198,14 @@ deploy: build-app
 	@echo ""
 	@echo "Deployment complete!"
 	@echo "StudyBuzz:  http://localhost:$(APP_PORT)"
-	@echo "Mistral:   http://localhost:8000"
-	@echo "Whisper:   http://localhost:8001"
+	@echo "Mistral:    Internal only (localhost:8000 inside pod)"
+	@echo "Whisper:    Internal only (localhost:8001 inside pod)"
+	@echo "PostgreSQL: Internal only (localhost:5432 inside pod)"
 
 clean:
 	@echo "Removing containers..."
 	-podman rm -f $(APP_CONTAINER)
+	-podman rm -f $(DB_CONTAINER)
 	-podman rm -f $(MISTRAL_CONTAINER)
 	-podman rm -f $(WHISPER_CONTAINER)
 	-podman pod rm -f studybuzz-pod 2>/dev/null || true

@@ -5,6 +5,8 @@ import psycopg
 DB_NAME = os.getenv("VIP_DB_NAME", "vip_db")
 DB_USER = os.getenv("VIP_DB_USER", "postgres")
 DB_PASSWORD = os.getenv("VIP_DB_PASSWORD", "postgres")
+# When running in a pod, containers share localhost
+# When running standalone, use host.containers.internal or localhost
 DB_HOST = os.getenv("VIP_DB_HOST", "localhost")
 DB_PORT = int(os.getenv("VIP_DB_PORT", "5432"))
 
