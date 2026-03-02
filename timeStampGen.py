@@ -26,7 +26,7 @@ def convert_video_to_mp3(video_path: str, output_path: str) -> bool:
 
     This function executes an ffmpeg command to extract the audio stream from a
     given video file and saves it as a heavily compressed MP3 file to adhere
-    to Whisper size limits. It assumes that ffmpeg is installed and accessible 
+    to Whisper size limits. It assumes that ffmpeg is installed and accessible
     in the system's PATH.
 
     Args:
@@ -89,13 +89,14 @@ def format_timestamp(seconds: float) -> str:
     """
     if seconds is None:
         return "00:00:00.000"
-    
+
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
     secs = int(seconds % 60)
     millis = int((seconds - int(seconds)) * 1000)
-    
+
     return f"{hours:02}:{minutes:02}:{secs:02}.{millis:03}"
+
 
 def transcribe_audio_with_whisper(mp3_path: str, output_txt_path: str) -> bool:
     """
@@ -129,9 +130,11 @@ def transcribe_audio_with_whisper(mp3_path: str, output_txt_path: str) -> bool:
     try:
         from openai import OpenAI
     except ImportError:
-        print("Error: openai package is not installed. Please install it using 'pip install openai'")
+        print(
+            "Error: openai package is not installed. Please install it using 'pip install openai'"
+        )
         return False
-        
+
     client = OpenAI(base_url=base_url, api_key="EMPTY")
 
     print(f"Transcribing '{mp3_path}' to '{output_txt_path}' using {base_url}...")
@@ -143,7 +146,7 @@ def transcribe_audio_with_whisper(mp3_path: str, output_txt_path: str) -> bool:
                 file=audio_file,
                 response_format="verbose_json",
                 timestamp_granularities=["segment"],
-                language=language
+                language=language,
             )
 
         with open(output_txt_path, "w", encoding="utf-8") as f:
@@ -152,40 +155,42 @@ def transcribe_audio_with_whisper(mp3_path: str, output_txt_path: str) -> bool:
             # Extract segments robustly (OpenAI client versions can return dicts or Pydantic models)
             segments = []
             if isinstance(transcription, dict):
-                segments = transcription.get('segments', [])
-            elif hasattr(transcription, 'segments') and transcription.segments:
+                segments = transcription.get("segments", [])
+            elif hasattr(transcription, "segments") and transcription.segments:
                 segments = transcription.segments
-            elif hasattr(transcription, 'model_dump'):
+            elif hasattr(transcription, "model_dump"):
                 dump = transcription.model_dump()
-                segments = dump.get('segments', [])
+                segments = dump.get("segments", [])
 
             if segments:
                 for segment in segments:
                     if isinstance(segment, dict):
-                        start = segment.get('start', 0.0)
-                        end = segment.get('end', 0.0)
-                        text = segment.get('text', "")
+                        start = segment.get("start", 0.0)
+                        end = segment.get("end", 0.0)
+                        text = segment.get("text", "")
                     else:
-                        start = getattr(segment, 'start', 0.0)
-                        end = getattr(segment, 'end', 0.0)
-                        text = getattr(segment, 'text', "")
-                    
+                        start = getattr(segment, "start", 0.0)
+                        end = getattr(segment, "end", 0.0)
+                        text = getattr(segment, "text", "")
+
                     vtt_start = format_timestamp(start)
                     vtt_end = format_timestamp(end)
-                    
+
                     f.write(f"{vtt_start} --> {vtt_end}\n")
                     f.write(f"{text.strip()}\n\n")
             else:
-                print("Warning: Response did not contain segments. The server might not support segment-level timestamps.")
+                print(
+                    "Warning: Response did not contain segments. The server might not support segment-level timestamps."
+                )
                 text_content = ""
                 if isinstance(transcription, dict):
-                    text_content = transcription.get('text', str(transcription))
-                elif hasattr(transcription, 'text'):
+                    text_content = transcription.get("text", str(transcription))
+                elif hasattr(transcription, "text"):
                     text_content = transcription.text
                 else:
                     text_content = str(transcription)
                 f.write(f"00:00:00.000 --> 00:00:00.000\n{text_content.strip()}\n")
-                
+
         print("Transcription successful!")
         return True
 
@@ -421,46 +426,39 @@ def _extract_plain_text_from_vtt(content: str) -> str:
     return "\n".join(lines)
 
 
-def _get_time_base(video_path: str) -> float:
-    """Gets the video stream's time base to correctly calculate PTS seconds."""
-    cmd = [
-        "ffprobe", "-v", "error", "-select_streams", "v:0",
-        "-show_entries", "stream=time_base", "-of", "json", video_path
-    ]
-    try:
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        info = json.loads(result.stdout)
-        tb_str = info.get("streams", [{}])[0].get("time_base", "1/90000")
-        if tb_str == "0/0":
-            tb_str = "1/90000"
-        num, den = map(float, tb_str.split('/'))
-        return num / den if den != 0 else 1 / 90000
-    except Exception as e:
-        print(f"Warning: Could not get time_base for {video_path}: {e}")
-        return 1 / 90000
-
-def _extract_all_scene_frames(
-    video_path: str, temp_dir: str
-) -> list[dict]:
-    """Extracts scene change frames from the entire video, keeping PTS."""
+def _extract_all_scene_frames(video_path: str, temp_dir: str) -> list[dict]:
+    """Extracts scene change frames from the entire video, treating the output PTS as frame index."""
     if not os.path.exists(video_path):
         print(f"Warning: Video file not found at {video_path}")
         return []
 
     os.makedirs(temp_dir, exist_ok=True)
-    time_base = _get_time_base(video_path)
+
+    # Get the frame rate to calculate seconds from frame index
+    metadata = _probe_video_metadata(video_path)
+    fps = metadata.get("fps")
+    if not fps or fps <= 0:
+        fps = 30.0  # Fallback to standard 30 fps
+        print(
+            f"Warning: Could not determine fps for {video_path}, defaulting to {fps} for timestamp calculation"
+        )
+
     output_pattern = os.path.join(temp_dir, "out%d.png")
-    
+
     command = [
         "ffmpeg",
-        "-i", video_path,
-        "-vf", "select='eq(n\\,0)+gt(scene\\,0.05)',scale=720:-1",
-        "-fps_mode", "vfr",
-        "-frame_pts", "1",
+        "-i",
+        video_path,
+        "-vf",
+        "select='eq(n\\,0)+gt(scene\\,0.05)',scale=720:-1",
+        "-fps_mode",
+        "vfr",
+        "-frame_pts",
+        "1",
         "-y",
-        output_pattern
+        output_pattern,
     ]
-    
+
     print(f"Extracting all scene frames from {video_path}...")
     try:
         subprocess.run(command, check=True, capture_output=True, text=True)
@@ -475,13 +473,15 @@ def _extract_all_scene_frames(
     frame_files = glob.glob(os.path.join(temp_dir, "out*.png"))
     for frame_file in frame_files:
         filename = os.path.basename(frame_file)
-        match = re.search(r'out(\d+)\.png$', filename)
+        match = re.search(r"out(\d+)\.png$", filename)
         if match:
-            pts = int(match.group(1))
-            seconds = pts * time_base
-            frames_meta.append({'path': frame_file, 'pts': pts, 'seconds': seconds})
+            frame_index = int(match.group(1))
+            seconds = frame_index / fps
+            frames_meta.append(
+                {"path": frame_file, "pts": frame_index, "seconds": seconds}
+            )
 
-    frames_meta.sort(key=lambda x: x['pts'])
+    frames_meta.sort(key=lambda x: x["pts"])
     print(f"Finished extracting {len(frames_meta)} scene frames.")
     return frames_meta
 
@@ -617,11 +617,13 @@ def summarize_chapters_with_llm(
 
     for i in range(len(timestamps)):
         if i + 1 < len(timestamps):
-            timestamps[i]["end_sec"] = timestamps[i+1]["start_sec"]
+            timestamps[i]["end_sec"] = timestamps[i + 1]["start_sec"]
         else:
-            timestamps[i]["end_sec"] = float('inf')
+            timestamps[i]["end_sec"] = float("inf")
 
-    print(f"Preparing to summarize {len(timestamps)} chapter(s) with pre-extracted frames.")
+    print(
+        f"Preparing to summarize {len(timestamps)} chapter(s) with pre-extracted frames."
+    )
 
     def _summarize_entry(entry: dict) -> Optional[tuple[int, dict]]:
         chapter_idx = entry["index"]
@@ -639,16 +641,26 @@ def summarize_chapters_with_llm(
             try:
                 with open(transcript_path, "r", encoding="utf-8") as f:
                     transcript_content = f.read()
-                transcript_text = _extract_plain_text_from_vtt(transcript_content).strip()
+                transcript_text = _extract_plain_text_from_vtt(
+                    transcript_content
+                ).strip()
                 if not transcript_text:
                     transcript_text = transcript_content.strip()
             except IOError as e:
-                print(f"Warning: Could not read transcript for chapter {chapter_idx}: {e}")
+                print(
+                    f"Warning: Could not read transcript for chapter {chapter_idx}: {e}"
+                )
                 return None
 
-            chapter_frames = [f for f in frames_meta if entry["start_sec"] <= f['seconds'] < entry["end_sec"]]
-            print(f"Chapter {chapter_idx} ('{entry['title']}') contains {len(chapter_frames)} extracted frames.")
-            
+            chapter_frames = [
+                f
+                for f in frames_meta
+                if entry["start_sec"] <= f["seconds"] < entry["end_sec"]
+            ]
+            print(
+                f"Chapter {chapter_idx} ('{entry['title']}') contains {len(chapter_frames)} extracted frames."
+            )
+
             user_prompt_text = (
                 "Please summarize the following video chapter. Focus on the main ideas, key "
                 "takeaways, and any actions described. Be concise but informative. Limit "
@@ -659,17 +671,19 @@ def summarize_chapters_with_llm(
                 f"{transcript_text}\n"
                 "---"
             )
-            
+
             user_content = [{"type": "text", "text": user_prompt_text}]
-            
+
             for frame_info in chapter_frames[:32]:
-                with open(frame_info['path'], "rb") as bf:
+                with open(frame_info["path"], "rb") as bf:
                     frame_b64 = base64.b64encode(bf.read()).decode("utf-8")
-                user_content.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/png;base64,{frame_b64}"}
-                })
-                
+                user_content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{frame_b64}"},
+                    }
+                )
+
             payload = {
                 "model": model_name,
                 "messages": [
@@ -677,7 +691,9 @@ def summarize_chapters_with_llm(
                 ],
             }
 
-            print(f"Requesting summary for chapter {chapter_idx}: {entry['title']} using {min(32, len(chapter_frames))} frames.")
+            print(
+                f"Requesting summary for chapter {chapter_idx}: {entry['title']} using {min(32, len(chapter_frames))} frames."
+            )
             data = json.dumps(payload).encode("utf-8")
             req = request.Request(
                 api_url, data=data, headers={"Content-Type": "application/json"}
@@ -686,21 +702,31 @@ def summarize_chapters_with_llm(
             try:
                 with request.urlopen(req) as response:
                     if response.status != 200:
-                        print(f"Warning: LLM returned status {response.status} for chapter {chapter_idx}.")
+                        print(
+                            f"Warning: LLM returned status {response.status} for chapter {chapter_idx}."
+                        )
                         return None
                     response_data = json.loads(response.read().decode("utf-8"))
             except error.HTTPError as e:
-                print(f"Warning: LLM returned HTTPError {e.code} for chapter {chapter_idx}.")
+                print(
+                    f"Warning: LLM returned HTTPError {e.code} for chapter {chapter_idx}."
+                )
                 return None
             except error.URLError as e:
-                print(f"Warning: Failed to contact LLM for chapter {chapter_idx}: {e.reason}")
+                print(
+                    f"Warning: Failed to contact LLM for chapter {chapter_idx}: {e.reason}"
+                )
                 return None
             except Exception as e:
-                print(f"Warning: Unexpected error during summarization request for chapter {chapter_idx}: {e}")
+                print(
+                    f"Warning: Unexpected error during summarization request for chapter {chapter_idx}: {e}"
+                )
                 return None
 
             summary_text = (
-                response_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                response_data.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
             )
             summary_text = summary_text.split("</think>")[-1].strip()
             if not summary_text:
@@ -709,14 +735,17 @@ def summarize_chapters_with_llm(
 
             return (chapter_idx, {entry["time"]: {entry["title"]: summary_text}})
         except Exception as e:
-            print(f"Warning: Unexpected error during summarization for chapter {chapter_idx}: {e}")
+            print(
+                f"Warning: Unexpected error during summarization for chapter {chapter_idx}: {e}"
+            )
             return None
 
     summaries = []
     max_workers = min(10, len(timestamps)) or 1
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_entry = {
-            executor.submit(_summarize_entry, entry): entry["index"] for entry in timestamps
+            executor.submit(_summarize_entry, entry): entry["index"]
+            for entry in timestamps
         }
         for future in as_completed(future_to_entry):
             try:
@@ -1000,7 +1029,9 @@ def main():
 
         # Start extracting frames in the background
         with ThreadPoolExecutor(max_workers=2) as pipeline_executor:
-            frames_future = pipeline_executor.submit(_extract_all_scene_frames, video_path, frames_dir)
+            frames_future = pipeline_executor.submit(
+                _extract_all_scene_frames, video_path, frames_dir
+            )
 
             transcript_exists = os.path.exists(out_transcript)
 
