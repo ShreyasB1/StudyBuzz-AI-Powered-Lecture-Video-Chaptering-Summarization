@@ -1,0 +1,104 @@
+title: StudyBuzz
+cluster: "ice-rh9"
+attributes:
+  huggingface_cache_path:
+    widget: "text_field"
+    label: "HuggingFace Model Cache Path"
+    required: false
+    value: "/storage/ice-shared/vip-vp4/Spring2026/SB-V-1a/huggingface"
+    help: "Full path to the HuggingFace model cache directory. Must contain models--mistralai--Mistral-Large-3-675B-Instruct-2512 and models--openai--whisper-large-v3 inside a hub/ subdirectory. The web UI still starts if the path is wrong, but video processing will not work."
+  hf_token:
+    widget: "text_field"
+    label: "HuggingFace Token"
+    required: false
+    value: ""
+    help: "Your full HuggingFace API token including the hf_ prefix (e.g. hf_abc123...). Required to download gated models like Mistral-Large-3. Leave blank if models are already cached."
+  qos:
+    widget: select
+    label: "Quality of Service"
+    options:
+      - ["Default (none)", ""]
+      - ["coc-ice", "coc-ice"]
+      - ["coc-grade", "coc-grade"]
+      - ["coe-ice", "coe-ice"]
+      - ["coe-grade", "coe-grade"]
+      - ["pace-ice", "pace-ice"]
+      - ["pace-grade", "pace-grade"]
+    value: "Default (none)"
+  node_type:
+    id: node_type
+    label: "Node Type"
+    widget: select
+    value: "H200_HGX"
+    options:
+      - ['NVIDIA GPU (first avail)', 'nvidia_gpu',
+          data-max-num-gpus: 8,
+          data-min-num-gpus: 1,
+          data-max-bc-num-slots: 1,
+          data-max-num-cores: 16,
+          data-max-num-mem-per-core: 64,
+        ]
+      - ['NVIDIA GPU L40S', 'L40S',
+          data-max-num-gpus: 4,
+          data-min-num-gpus: 1,
+          data-max-bc-num-slots: 1,
+          data-max-num-cores: 16,
+          data-max-num-mem-per-core: 64,
+        ]
+      - ['NVIDIA GPU H100 HGX', 'H100_HGX',
+          data-max-num-gpus: 8,
+          data-min-num-gpus: 1,
+          data-max-bc-num-slots: 1,
+          data-max-num-cores: 16,
+          data-max-num-mem-per-core: 64,
+        ]
+      - ['NVIDIA GPU H200 HGX', 'H200_HGX',
+          data-max-num-gpus: 8,
+          data-min-num-gpus: 1,
+          data-max-bc-num-slots: 1,
+          data-max-num-cores: 16,
+          data-max-num-mem-per-core: 64,
+        ]
+  bc_num_slots:
+    label: "Nodes"
+    min: 1
+    max: 1
+    step: 1
+    value: 1
+    help: "StudyBuzz requires only 1 node"
+  num_cores:
+    widget: number_field
+    label: "Cores"
+    min: 4
+    max: 16
+    step: 1
+    value: 8
+    help: 'Number of CPU cores for the application'
+  num_mem_per_core:
+    widget: number_field
+    label: "Memory Per Core (GB)"
+    min: 8
+    max: 64
+    step: 4
+    value: 16
+    help: "Memory allocation per core"
+  num_gpus:
+    label: "GPUs"
+    widget: number_field
+    min: 1
+    max: 8
+    step: 1
+    value: 8
+    help: "Number of GPUs. Mistral-Large-3-675B requires 8 GPUs (tensor-parallel-size 8). Whisper shares the same GPUs with minimal memory."
+
+form:
+  - huggingface_cache_path
+  - hf_token
+  - qos
+  - node_type
+  - bc_num_slots
+  - num_cores
+  - num_gpus
+  - num_mem_per_core
+  - bc_num_hours
+  - bc_email_on_started

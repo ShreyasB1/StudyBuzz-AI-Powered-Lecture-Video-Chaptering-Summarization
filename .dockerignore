@@ -1,0 +1,15 @@
+uploads
+output
+__pycache__
+*.pyc
+.git
+.env
+venv
+*.egg-info
+*.bin
+template
+*.erb
+*.yml
+install.sh
+Makefile
+README.md
