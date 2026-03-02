@@ -20,84 +20,6 @@ def _sanitize_title(title: str) -> str:
     return safe_title.strip().replace(" ", "_")
 
 
-def split_video(
-    video_path: str, start_time: str, end_time: str, output_path: str
-) -> bool:
-    """
-    Splits a video file from a starting time to an ending time using ffmpeg.
-
-    This function extracts a segment of a video file between the specified
-    start and end times and saves it to a new file, re-encoding to a
-    stream-friendly H.264/AAC format so downstream video loaders can reliably
-    decode a consistent number of frames.
-
-    Args:
-        video_path: The absolute or relative path to the input video file.
-        start_time: The starting timestamp in format "HH:MM:SS" or "MM:SS" or seconds.
-        end_time: The ending timestamp in format "HH:MM:SS" or "MM:SS" or seconds.
-        output_path: The absolute or relative path where the output video file
-                     will be saved. The directory will be created if it
-                     doesn't exist.
-
-    Returns:
-        True if the split was successful, False otherwise.
-    """
-    # 1. Input Validation: Check if the source video file exists.
-    if not os.path.exists(video_path):
-        print(f"Error: Input video file not found at '{video_path}'")
-        return False
-
-    # 2. Prepare Output Directory: Ensure the directory for the output file exists.
-    output_dir = os.path.dirname(output_path)
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-
-    # 3. Construct the ffmpeg command.
-    # Re-encode the segment to ensure compatibility with downstream video loaders.
-    command = [
-        "ffmpeg",
-        "-ss",
-        start_time,  # Start time
-        "-to",
-        end_time,  # End time
-        "-i",
-        video_path,  # Input file
-        "-c:v",
-        "libx264",  # Re-encode video for consistent decoding
-        "-preset",
-        "veryfast",
-        "-crf",
-        "23",
-        "-pix_fmt",
-        "yuv420p",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "128k",
-        "-movflags",
-        "+faststart",
-        "-y",  # Overwrite output file if exists
-        output_path,
-    ]
-
-    # 4. Execute the command.
-    print(f"Splitting '{video_path}' from {start_time} to {end_time}...")
-    print(f"Output will be saved to '{output_path}'")
-    try:
-        result = subprocess.run(command, check=True, capture_output=True, text=True)
-        print("Video split successful!")
-        return True
-    except FileNotFoundError:
-        print("Error: 'ffmpeg' command not found.")
-        print("Please ensure ffmpeg is installed and in your system's PATH.")
-        return False
-    except subprocess.CalledProcessError as e:
-        print("Error during video splitting.")
-        print(f"ffmpeg returned non-zero exit status: {e.returncode}")
-        print("ffmpeg stderr:", e.stderr)
-        return False
-
-
 def convert_video_to_mp3(video_path: str, output_path: str) -> bool:
     """
     Converts a video file to an MP3 audio file using ffmpeg.
@@ -487,43 +409,69 @@ def _extract_plain_text_from_vtt(content: str) -> str:
     return "\n".join(lines)
 
 
-def _encode_video_frames(
-    video_path: str, output_dir: str
-) -> list[str]:
-    """Extract Base64-encoded PNG frames from a video file using ffmpeg scene detection."""
+def _get_time_base(video_path: str) -> float:
+    """Gets the video stream's time base to correctly calculate PTS seconds."""
+    cmd = [
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=time_base", "-of", "json", video_path
+    ]
+    try:
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        info = json.loads(result.stdout)
+        tb_str = info.get("streams", [{}])[0].get("time_base", "1/90000")
+        if tb_str == "0/0":
+            tb_str = "1/90000"
+        num, den = map(float, tb_str.split('/'))
+        return num / den if den != 0 else 1 / 90000
+    except Exception as e:
+        print(f"Warning: Could not get time_base for {video_path}: {e}")
+        return 1 / 90000
+
+def _extract_all_scene_frames(
+    video_path: str, temp_dir: str
+) -> list[dict]:
+    """Extracts scene change frames from the entire video, keeping PTS."""
     if not os.path.exists(video_path):
         print(f"Warning: Video file not found at {video_path}")
         return []
 
-    encoded_frames: list[str] = []
+    os.makedirs(temp_dir, exist_ok=True)
+    time_base = _get_time_base(video_path)
+    output_pattern = os.path.join(temp_dir, "out%d.png")
+    
+    command = [
+        "ffmpeg",
+        "-i", video_path,
+        "-vf", "select='eq(n\\,0)+gt(scene\\,0.05)',scale=720:-1",
+        "-fps_mode", "vfr",
+        "-frame_pts", "1",
+        "-y",
+        output_pattern
+    ]
+    
+    print(f"Extracting all scene frames from {video_path}...")
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Error extracting frames: {e.stderr}")
+        return []
+    except Exception as e:
+        print(f"Error processing frames: {e}")
+        return []
 
-    with tempfile.TemporaryDirectory(dir=output_dir) as temp_dir:
-        output_pattern = os.path.join(temp_dir, "out%d.png")
-        command = [
-            "ffmpeg",
-            "-i", video_path,
-            "-vf", "select='eq(n\\,0)+gt(scene\\,0.05)',scale=720:-1",
-            "-fps_mode", "vfr",
-            "-frame_pts", "1",
-            output_pattern
-        ]
-        
-        try:
-            subprocess.run(command, check=True, capture_output=True, text=True)
-            
-            frame_files = sorted(glob.glob(os.path.join(temp_dir, "*.png")), 
-                                 key=lambda x: int(re.search(r'out(\d+)\.png$', x).group(1)) if re.search(r'out(\d+)\.png$', x) else 0)
-            
-            for frame_file in frame_files:
-                with open(frame_file, "rb") as f:
-                    encoded_frames.append(base64.b64encode(f.read()).decode("utf-8"))
-                    
-        except subprocess.CalledProcessError as e:
-            print(f"Error extracting frames: {e.stderr}")
-        except Exception as e:
-            print(f"Error processing frames: {e}")
-            
-    return encoded_frames
+    frames_meta = []
+    frame_files = glob.glob(os.path.join(temp_dir, "out*.png"))
+    for frame_file in frame_files:
+        filename = os.path.basename(frame_file)
+        match = re.search(r'out(\d+)\.png$', filename)
+        if match:
+            pts = int(match.group(1))
+            seconds = pts * time_base
+            frames_meta.append({'path': frame_file, 'pts': pts, 'seconds': seconds})
+
+    frames_meta.sort(key=lambda x: x['pts'])
+    print(f"Finished extracting {len(frames_meta)} scene frames.")
+    return frames_meta
 
 
 def _extract_timestamp_lines(text: str) -> list[str]:
@@ -586,152 +534,20 @@ def _probe_video_metadata(video_path: str) -> dict[str, Optional[float]]:
         return {"frame_count": None, "fps": None, "duration": None}
 
 
-def create_clips_from_timestamps(
-    video_path: str,
+def summarize_chapters_with_llm(
     timestamps_path: str,
-    output_dir: str,
-    mirror_dir: Optional[str] = None,
-) -> bool:
-    """
-    Creates video clips based on timestamps from a timestamp file.
-
-    This function reads a timestamp file containing chapter markers in the format
-    "HH:MM:SS - Chapter Title" and uses the split_video function to create
-    individual video clips for each chapter segment.
-
-    Args:
-        video_path: The absolute or relative path to the input video file.
-        timestamps_path: Path to the timestamps file with format "HH:MM:SS - Chapter Title".
-        output_dir: Directory where the video clips will be saved.
-        mirror_dir: Optional directory that will receive a copy of each clip (e.g., a
-            host path mounted into the vLLM container).
-
-    Returns:
-        True if all clips were created successfully, False otherwise.
-    """
-    # 1. Input Validation: Check if files exist.
-    if not os.path.exists(video_path):
-        print(f"Error: Input video file not found at '{video_path}'")
-        return False
-
-    if not os.path.exists(timestamps_path):
-        print(f"Error: Timestamps file not found at '{timestamps_path}'")
-        return False
-
-    # 2. Read and parse the timestamps file.
-    timestamps = []
-    try:
-        with open(timestamps_path, "r", encoding="utf-8") as f:
-            for line_num, line in enumerate(f, 1):
-                line = line.strip()
-                # Skip empty lines and lines that don't contain timestamps
-                if not line or " - " not in line:
-                    continue
-
-                # Parse timestamp format: "HH:MM:SS - Chapter Title"
-                parts = line.split(" - ", 1)
-                if len(parts) != 2:
-                    continue
-
-                timestamp_str = parts[0].strip()
-                title = parts[1].strip()
-
-                # Validate timestamp format (HH:MM:SS or MM:SS)
-                time_parts = timestamp_str.split(":")
-                if len(time_parts) not in [2, 3]:
-                    print(
-                        f"Warning: Skipping line {line_num} - invalid timestamp format: {timestamp_str}"
-                    )
-                    continue
-
-                timestamps.append({"time": timestamp_str, "title": title})
-
-    except IOError as e:
-        print(f"Error reading timestamps file: {e}")
-        return False
-
-    if not timestamps:
-        print("Error: No valid timestamps found in the file.")
-        print("Expected format: 'HH:MM:SS - Chapter Title' or 'MM:SS - Chapter Title'")
-        return False
-
-    print(f"Found {len(timestamps)} chapter(s) to extract.")
-
-    # 3. Create output directories.
-    os.makedirs(output_dir, exist_ok=True)
-    if mirror_dir:
-        os.makedirs(mirror_dir, exist_ok=True)
-
-    video_label = _sanitize_title(os.path.splitext(os.path.basename(video_path))[0])
-
-    # 4. Create video clips for each timestamp segment.
-    success_count = 0
-    for i, timestamp in enumerate(timestamps):
-        start_time = timestamp["time"]
-        # Determine end time (next timestamp or end of video)
-        if i + 1 < len(timestamps):
-            end_time = timestamps[i + 1]["time"]
-        else:
-            # For the last segment, we'll need to get video duration or use a large value
-            # Using a large value as end time (ffmpeg will stop at video end)
-            end_time = "99:59:59"
-
-        # Create a safe filename from the chapter title
-        safe_title = _sanitize_title(timestamp["title"])
-
-        # Get the video extension from input file
-        video_ext = os.path.splitext(video_path)[1]
-        output_filename = f"{video_label}_clip_{i+1:02d}_{safe_title}{video_ext}"
-        output_path = os.path.join(output_dir, output_filename)
-
-        print(f"\n--- Creating clip {i+1}/{len(timestamps)} ---")
-        print(f"Title: {timestamp['title']}")
-        print(f"Time range: {start_time} to {end_time}")
-
-        if split_video(video_path, start_time, end_time, output_path):
-            success_count += 1
-            if mirror_dir:
-                mirror_path = os.path.join(mirror_dir, output_filename)
-                if os.path.abspath(mirror_path) != os.path.abspath(output_path):
-                    try:
-                        shutil.copy2(output_path, mirror_path)
-                    except OSError as copy_err:
-                        print(
-                            "Warning: Failed to synchronize clip to mirror directory "
-                            f"'{mirror_path}': {copy_err}"
-                        )
-        else:
-            print(f"Failed to create clip for '{timestamp['title']}'")
-
-    # 5. Report results.
-    print(f"\n--- Clip Creation Complete ---")
-    print(f"Successfully created {success_count}/{len(timestamps)} clips.")
-    print(f"Clips saved to: {output_dir}")
-
-    return success_count == len(timestamps)
-
-
-def summarize_clips_with_llm(
-    timestamps_path: str,
-    clips_dir: str,
+    frames_meta: list[dict],
     chapter_transcripts_dir: str,
     output_json_path: str,
     api_url: str = "http://localhost:8000/v1/chat/completions",
     model_name: str = "mistral-large",
-    container_video_root: str = "/root/video",
 ) -> bool:
     """
-    Generate summaries for each chapter clip using a local LLM.
-
-    The function sends the text transcript plus a direct video reference by using the
-    `video_url` content type with a `file://` URI to the local clip. Ensure the vLLM server is started with
-    `--allowed-local-media-path` that includes `clips_dir` so the model can access
-    the referenced files. As a fallback preview, sampled JPEG frames are also
-    attached as inline base64 images when available.
+    Generate summaries for each chapter using extracted video frames and a local LLM.
 
     Args:
         timestamps_path: Path to the timestamps file ("HH:MM:SS - Chapter Title").
-        clips_dir: Directory that contains chapter video clips.
+        frames_meta: Metadata of all pre-extracted scene frames.
         chapter_transcripts_dir: Directory with per-chapter transcript VTT files.
         output_json_path: Destination path for the JSON summaries file.
         api_url: OpenAI-compatible endpoint for the local LLM.
@@ -742,10 +558,6 @@ def summarize_clips_with_llm(
     """
     if not os.path.exists(timestamps_path):
         print(f"Error: Timestamps file not found at '{timestamps_path}'")
-        return False
-
-    if not os.path.isdir(clips_dir):
-        print(f"Error: Clips directory not found at '{clips_dir}'")
         return False
 
     if not os.path.isdir(chapter_transcripts_dir):
@@ -779,6 +591,7 @@ def summarize_clips_with_llm(
                         "title": title,
                         "safe_title": _sanitize_title(title),
                         "index": len(timestamps) + 1,
+                        "start_sec": parse_vtt_timestamp(timestamp_str),
                     }
                 )
 
@@ -790,24 +603,18 @@ def summarize_clips_with_llm(
         print("Error: No valid timestamps found for summarization.")
         return False
 
-    print(
-        f"Preparing to summarize {len(timestamps)} chapter clip(s) with video context."
-    )
+    for i in range(len(timestamps)):
+        if i + 1 < len(timestamps):
+            timestamps[i]["end_sec"] = timestamps[i+1]["start_sec"]
+        else:
+            timestamps[i]["end_sec"] = float('inf')
+
+    print(f"Preparing to summarize {len(timestamps)} chapter(s) with pre-extracted frames.")
 
     def _summarize_entry(entry: dict) -> Optional[tuple[int, dict]]:
         chapter_idx = entry["index"]
         safe_title = entry["safe_title"]
         try:
-            clip_pattern = os.path.join(clips_dir, f"*clip_{chapter_idx:02d}_{safe_title}*")
-            matching_clips = sorted(glob.glob(clip_pattern))
-            if not matching_clips:
-                print(
-                    f"Warning: No clip found for chapter {chapter_idx} ({entry['title']})."
-                )
-                return None
-            clip_path = matching_clips[0]
-            clip_name = os.path.basename(clip_path)
-
             transcript_filename = f"chapter_{chapter_idx:02d}_{safe_title}.vtt"
             transcript_path = os.path.join(chapter_transcripts_dir, transcript_filename)
             if not os.path.exists(transcript_path):
@@ -824,13 +631,12 @@ def summarize_clips_with_llm(
                 if not transcript_text:
                     transcript_text = transcript_content.strip()
             except IOError as e:
-                print(
-                    f"Warning: Could not read transcript for chapter {chapter_idx}: {e}"
-                )
+                print(f"Warning: Could not read transcript for chapter {chapter_idx}: {e}")
                 return None
 
-            container_clip_path = f"{container_video_root.rstrip('/')}/{clip_name}"
-            file_url = f"file://{container_clip_path}"
+            chapter_frames = [f for f in frames_meta if entry["start_sec"] <= f['seconds'] < entry["end_sec"]]
+            print(f"Chapter {chapter_idx} ('{entry['title']}') contains {len(chapter_frames)} extracted frames.")
+            
             user_prompt_text = (
                 "Please summarize the following video chapter. Focus on the main ideas, key "
                 "takeaways, and any actions described. Be concise but informative. Limit "
@@ -841,14 +647,17 @@ def summarize_clips_with_llm(
                 f"{transcript_text}\n"
                 "---"
             )
-            frames = _encode_video_frames(clip_path, clips_dir)
+            
             user_content = [{"type": "text", "text": user_prompt_text}]
             
-            for frame_b64 in frames[:32]:
+            for frame_info in chapter_frames[:32]:
+                with open(frame_info['path'], "rb") as bf:
+                    frame_b64 = base64.b64encode(bf.read()).decode("utf-8")
                 user_content.append({
                     "type": "image_url",
                     "image_url": {"url": f"data:image/png;base64,{frame_b64}"}
                 })
+                
             payload = {
                 "model": model_name,
                 "messages": [
@@ -856,8 +665,7 @@ def summarize_clips_with_llm(
                 ],
             }
 
-            _ = _probe_video_metadata(clip_path)
-            print(f"Requesting summary for chapter {chapter_idx}: {entry['title']}")
+            print(f"Requesting summary for chapter {chapter_idx}: {entry['title']} using {min(32, len(chapter_frames))} frames.")
             data = json.dumps(payload).encode("utf-8")
             req = request.Request(
                 api_url, data=data, headers={"Content-Type": "application/json"}
@@ -866,32 +674,17 @@ def summarize_clips_with_llm(
             try:
                 with request.urlopen(req) as response:
                     if response.status != 200:
-                        print(
-                            f"Warning: LLM returned status {response.status} for chapter {chapter_idx}."
-                        )
+                        print(f"Warning: LLM returned status {response.status} for chapter {chapter_idx}.")
                         return None
                     response_data = json.loads(response.read().decode("utf-8"))
             except error.HTTPError as e:
-                error_body = (
-                    e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
-                )
-                print(
-                    "Warning: LLM returned HTTPError for chapter "
-                    f"{chapter_idx} ({entry['title']}): status={e.code}, reason={e.reason}"
-                )
-                if error_body:
-                    print("Response body snippet:")
-                    print(error_body[:2000])
+                print(f"Warning: LLM returned HTTPError {e.code} for chapter {chapter_idx}.")
                 return None
             except error.URLError as e:
-                print(
-                    f"Warning: Failed to contact LLM for chapter {chapter_idx}: {e.reason}"
-                )
+                print(f"Warning: Failed to contact LLM for chapter {chapter_idx}: {e.reason}")
                 return None
             except Exception as e:
-                print(
-                    f"Warning: Unexpected error during summarization for chapter {chapter_idx}: {e}"
-                )
+                print(f"Warning: Unexpected error during summarization request for chapter {chapter_idx}: {e}")
                 return None
 
             summary_text = (
@@ -899,20 +692,16 @@ def summarize_clips_with_llm(
             )
             summary_text = summary_text.split("</think>")[-1].strip()
             if not summary_text:
-                print(
-                    f"Warning: Empty summary returned for chapter {chapter_idx} ({entry['title']})."
-                )
+                print(f"Warning: Empty summary returned for chapter {chapter_idx}.")
                 return None
 
             return (chapter_idx, {entry["time"]: {entry["title"]: summary_text}})
         except Exception as e:
-            print(
-                f"Warning: Unexpected error during summarization for chapter {chapter_idx}: {e}"
-            )
+            print(f"Warning: Unexpected error during summarization for chapter {chapter_idx}: {e}")
             return None
 
     summaries = []
-    max_workers = min(2, len(timestamps)) or 1
+    max_workers = min(10, len(timestamps)) or 1
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_entry = {
             executor.submit(_summarize_entry, entry): entry["index"] for entry in timestamps
@@ -1190,83 +979,82 @@ def main():
         out_transcript = os.path.join(output_dir, f"{base_name}.mp3.vtt")
         out_timestamps = os.path.join(output_dir, f"{base_name}_timestamps.txt")
         chapter_dir = os.path.join(output_dir, f"{base_name}_chapters")
-        clips_dir = os.path.join(output_dir, "video")
-        mirror_dir = os.path.join(os.getcwd(), "video")
+        frames_dir = os.path.join(output_dir, f"{base_name}_frames")
         summary_json_path = os.path.join(output_dir, f"{base_name}_summary.json")
 
         os.makedirs(output_dir, exist_ok=True)
 
         print(f"\nProcessing: {video_path}")
 
-        transcript_exists = os.path.exists(out_transcript)
+        # Start extracting frames in the background
+        with ThreadPoolExecutor(max_workers=2) as pipeline_executor:
+            frames_future = pipeline_executor.submit(_extract_all_scene_frames, video_path, frames_dir)
 
-        if transcript_exists:
-            print(
-                f"Transcript already exists at '{out_transcript}'. "
-                "Skipping audio conversion and transcription."
-            )
-            if not os.path.exists(out_audio):
+            transcript_exists = os.path.exists(out_transcript)
+
+            if transcript_exists:
                 print(
-                    f"Note: MP3 file '{out_audio}' is missing. Continuing with existing transcript."
+                    f"Transcript already exists at '{out_transcript}'. "
+                    "Skipping audio conversion and transcription."
                 )
-        else:
-            if os.path.exists(out_audio):
-                print(f"Existing MP3 found at '{out_audio}'. Skipping conversion.")
+                if not os.path.exists(out_audio):
+                    print(
+                        f"Note: MP3 file '{out_audio}' is missing. Continuing with existing transcript."
+                    )
             else:
+                if os.path.exists(out_audio):
+                    print(f"Existing MP3 found at '{out_audio}'. Skipping conversion.")
+                else:
+                    print("-" * 20)
+                    if not convert_video_to_mp3(video_path, out_audio):
+                        print("Pipeline stopped at video-to-MP3 conversion.")
+                        return
+
                 print("-" * 20)
-                if not convert_video_to_mp3(video_path, out_audio):
-                    print("Pipeline stopped at video-to-MP3 conversion.")
+                if not transcribe_audio_with_whisper(out_audio, out_transcript):
+                    print("Pipeline stopped at audio transcription.")
                     return
 
+            # 3. Generate timestamps from text
             print("-" * 20)
-            if not transcribe_audio_with_whisper(out_audio, out_transcript):
-                print("Pipeline stopped at audio transcription.")
+            if not generate_timestamps_with_llm(out_transcript, out_timestamps):
+                print("Pipeline stopped at timestamp generation.")
                 return
 
-        # 3. Generate timestamps from text
-        print("-" * 20)
-        if not generate_timestamps_with_llm(out_transcript, out_timestamps):
-            print("Pipeline stopped at timestamp generation.")
-            return
+            # 4. Split transcript into chapter-specific files
+            print("-" * 20)
+            if not split_transcript_by_timestamps(
+                out_transcript, out_timestamps, chapter_dir
+            ):
+                print("Pipeline stopped at transcript splitting.")
+                return
 
-        # 4. Split transcript into chapter-specific files
-        print("-" * 20)
-        if not split_transcript_by_timestamps(
-            out_transcript, out_timestamps, chapter_dir
-        ):
-            print("Pipeline stopped at transcript splitting.")
-            return
+            # 5. Wait for frames
+            print("-" * 20)
+            print("Waiting for background frame extraction to complete...")
+            try:
+                frames_meta = frames_future.result()
+            except Exception as e:
+                print(f"Pipeline stopped: Frame extraction failed with error: {e}")
+                return
 
-        # 5. Create chapter clips from original video
-        print("-" * 20)
-        if not create_clips_from_timestamps(
-            video_path,
-            out_timestamps,
-            clips_dir,
-            mirror_dir=mirror_dir,
-        ):
-            print("Pipeline stopped at clip creation.")
-            return
-
-        # 6. Summarize each clip with the LLM and write JSON output
-        print("-" * 20)
-        if not summarize_clips_with_llm(
-            out_timestamps,
-            clips_dir,
-            chapter_dir,
-            summary_json_path,
-            container_video_root="/root/video",
-        ):
-            print("Pipeline stopped at clip summarization.")
-            return
+            # 6. Summarize each chapter with the LLM and write JSON output
+            print("-" * 20)
+            if not summarize_chapters_with_llm(
+                out_timestamps,
+                frames_meta,
+                chapter_dir,
+                summary_json_path,
+            ):
+                print("Pipeline stopped at chapter summarization.")
+                return
 
         print("\n--- Pipeline finished for this file ---")
         print(f"Audio file: {out_audio}")
         print(f"Transcript file: {out_transcript}")
         print(f"Timestamps file: {out_timestamps}")
         print(f"Chapter transcripts: {chapter_dir}")
-        print(f"Chapter clips: {clips_dir}")
-        print(f"Mirrored clips for vLLM: {mirror_dir}")
+        print(f"Pre-extracted Frames: {frames_dir}")
         print(f"Summary JSON: {summary_json_path}")
 
         try:
