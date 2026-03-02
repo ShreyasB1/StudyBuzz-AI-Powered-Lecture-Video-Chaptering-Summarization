@@ -161,7 +161,21 @@ pip install -r requirements.txt
 pip install -r requirements_backend.txt
 ```
 
-### 3. Start the Application
+### 3. Start the Database (pgvector)
+
+```bash
+podman run -d \
+  --name pgvector_local \
+  --userns=keep-id \
+  --net=host \
+  -e POSTGRES_PASSWORD=mysecret \
+  -e PGDATA=/var/lib/postgresql/data/pgdata \
+  -e PGPORT=5432 \
+  -v ./my_pgdata:/var/lib/postgresql/data \
+  pgvector/pgvector:pg18-trixie
+```
+
+### 4. Start the Application
 
 ```bash
 python app.py
