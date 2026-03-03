@@ -1,6 +1,6 @@
 # Custom PostgreSQL image with pre-initialized database and pgvector
 # This avoids the chown issue on PACE by initializing the database at build time
-FROM postgres:16-alpine
+FROM docker.io/library/postgres:16-alpine
 
 # Install pgvector extension
 RUN apk add --no-cache \
