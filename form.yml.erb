@@ -6,13 +6,13 @@ attributes:
     label: "HuggingFace Model Cache Path"
     required: false
     value: "/storage/ice-shared/vip-vp4/Spring2026/SB-V-1a/huggingface"
-    help: "Full path to the HuggingFace model cache directory. Must contain models--mistralai--Mistral-Large-3-675B-Instruct-2512 and models--openai--whisper-large-v3 inside a hub/ subdirectory. The web UI still starts if the path is wrong, but video processing will not work."
+    help: "Full path to the HuggingFace model cache directory. Leave empty to use the default shared path (/storage/ice-shared/vip-vp4/Spring2026/SB-V-1a/huggingface). Only change this if models are stored elsewhere."
   hf_token:
     widget: "text_field"
     label: "HuggingFace Token"
     required: false
     value: ""
-    help: "Your full HuggingFace API token including the hf_ prefix (e.g. hf_abc123...). Required to download gated models like Mistral-Large-3. Leave blank if models are already cached."
+    help: "Optional. Only needed if models have not been downloaded yet. The models are already cached in the default shared path, so you can leave this blank. If needed, use your full token including the hf_ prefix (e.g. hf_abc123...)."
   qos:
     widget: select
     label: "Quality of Service"

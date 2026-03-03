@@ -14,8 +14,13 @@ port=$(find_port)
 export PODMAN_STORAGE_ROOT="${HOME}/.local/share/containers/storage-${SLURM_JOB_ID}"
 mkdir -p "${PODMAN_STORAGE_ROOT}"
 
-# Export paths and tokens from the form
-export HUGGINGFACE_CACHE_PATH="<%= context.huggingface_cache_path %>"
+# Export paths and tokens from the form (with defaults for empty values)
+HUGGINGFACE_CACHE_PATH="<%= context.huggingface_cache_path %>"
+if [ -z "${HUGGINGFACE_CACHE_PATH}" ]; then
+  HUGGINGFACE_CACHE_PATH="/storage/ice-shared/vip-vp4/Spring2026/SB-V-1a/huggingface"
+fi
+export HUGGINGFACE_CACHE_PATH
+
 export HF_TOKEN="<%= context.hf_token %>"
 export NUM_GPUS="<%= context.num_gpus %>"
 
