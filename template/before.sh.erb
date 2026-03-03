@@ -7,6 +7,9 @@
 # Export the module function if it exists
 [[ $(type -t module) == "function" ]] && export -f module
 
+# Ensure script.sh is executable (OnDemand may not preserve permissions)
+chmod +x "<%= session.staged_root %>/script.sh"
+
 # Find available port for the StudyBuzz Flask app
 port=$(find_port)
 
