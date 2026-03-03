@@ -134,6 +134,15 @@ if [ -n "${HUGGINGFACE_CACHE_PATH}" ] && [ -d "${HUGGINGFACE_CACHE_PATH}" ]; the
 
   TENSOR_PARALLEL=${NUM_GPUS:-8}
 
+  # Only pass HF token env var if one was provided
+  HF_TOKEN_ARGS=()
+  if [ -n "${HF_TOKEN}" ]; then
+    HF_TOKEN_ARGS=(--env "HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}")
+    echo "  HuggingFace token provided."
+  else
+    echo "  No HuggingFace token provided (models must already be cached)."
+  fi
+
   podman run -d \
     --pod "${POD_NAME}" \
     --name "mistral-vllm-${SLURM_JOB_ID}" \
@@ -142,7 +151,7 @@ if [ -n "${HUGGINGFACE_CACHE_PATH}" ] && [ -d "${HUGGINGFACE_CACHE_PATH}" ]; the
     --ipc=host \
     -v "${HUGGINGFACE_CACHE_PATH}:/root/.cache/huggingface" \
     -v "${VIDEO_DIR}:/root/video" \
-    --env "HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}" \
+    "${HF_TOKEN_ARGS[@]}" \
     --env "NCCL_DEBUG=INFO" \
     --env "OMP_NUM_THREADS=16" \
     docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129 \
@@ -204,7 +213,7 @@ if [ -n "${HUGGINGFACE_CACHE_PATH}" ] && [ -d "${HUGGINGFACE_CACHE_PATH}" ]; the
     --security-opt=label=disable \
     --ipc=host \
     -v "${HUGGINGFACE_CACHE_PATH}:/root/.cache/huggingface" \
-    --env "HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}" \
+    "${HF_TOKEN_ARGS[@]}" \
     --env "VLLM_USE_DEEP_GEMM=0" \
     --entrypoint /bin/bash \
     docker.io/vllm/vllm-openai:v0.14.0 \
