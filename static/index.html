@@ -89,10 +89,16 @@
           if (status === 'healthy') return '<span class="dot green"></span>healthy';
           return '<span class="dot red"></span>' + (status || 'unknown');
         };
+        const dbDot = function(status) {
+          if (status === 'connected') return '<span class="dot green"></span>connected';
+          if (status === 'not available') return '<span class="dot gray"></span>not available';
+          return '<span class="dot red"></span>' + (status || 'error');
+        };
         el.innerHTML =
           '<div class="health-row">' + dot(data.status) + ' &mdash; StudyBuzz App</div>' +
           '<div class="health-row">' + dot(data.mistral) + ' &mdash; Mistral LLM (port 8000)</div>' +
-          '<div class="health-row">' + dot(data.whisper) + ' &mdash; Whisper STT (port 8001)</div>';
+          '<div class="health-row">' + dot(data.whisper) + ' &mdash; Whisper STT (port 8001)</div>' +
+          '<div class="health-row">' + dbDot(data.database) + ' &mdash; PostgreSQL Database (port 5432)</div>';
         if (data.mistral === 'ready' && data.whisper === 'ready') {
           modelsReady = true;
           el.innerHTML += '<div class="status success" style="margin-top:0.5rem">All models loaded. Ready to process videos.</div>';

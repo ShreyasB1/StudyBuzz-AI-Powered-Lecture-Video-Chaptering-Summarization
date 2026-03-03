@@ -51,8 +51,7 @@ echo "HuggingFace cache: ${HUGGINGFACE_CACHE_PATH}"
 OUTPUT_DIR="${PWD}/output"
 VIDEO_DIR="${OUTPUT_DIR}/video"
 UPLOADS_DIR="${PWD}/uploads"
-POSTGRES_DATA_DIR="${PWD}/postgres-data"
-mkdir -p "${VIDEO_DIR}" "${UPLOADS_DIR}" "${POSTGRES_DATA_DIR}"
+mkdir -p "${VIDEO_DIR}" "${UPLOADS_DIR}"
 
 # ---------------------------------------------------------------------------
 # Create Podman pod (shared network namespace for all containers)
@@ -69,27 +68,50 @@ echo "Pod created: ${POD_NAME}"
 
 # ---------------------------------------------------------------------------
 # Start PostgreSQL database container (internal only, no GPU needed)
+# NOTE: Data is ephemeral (not persisted) to avoid filesystem permission issues
 # ---------------------------------------------------------------------------
 echo "TIMING - Starting PostgreSQL database at: $(date)"
 
 podman run -d \
   --pod "${POD_NAME}" \
   --name "postgres-db-${SLURM_JOB_ID}" \
-  -v "${POSTGRES_DATA_DIR}:/var/lib/postgresql/data:Z" \
   --env "POSTGRES_DB=vip_db" \
   --env "POSTGRES_USER=postgres" \
   --env "POSTGRES_PASSWORD=postgres" \
   docker.io/library/postgres:16-alpine
 
+# Wait a bit for container to attempt startup
+sleep 5
+
+# Check if container is still running (it may crash immediately due to permissions)
 if podman ps --filter "name=postgres-db-${SLURM_JOB_ID}" --format "{{.Names}}" | grep -q "postgres-db"; then
   echo "PostgreSQL container is running."
+  
+  # Wait for PostgreSQL to be ready
+  echo "Waiting for PostgreSQL to be ready..."
+  POSTGRES_READY=0
+  for i in {1..30}; do
+    if podman exec "postgres-db-${SLURM_JOB_ID}" pg_isready -U postgres > /dev/null 2>&1; then
+      echo "PostgreSQL is ready!"
+      POSTGRES_READY=1
+      break
+    fi
+    echo "  Waiting for PostgreSQL... ($i/30)"
+    sleep 2
+  done
+  
+  if [ $POSTGRES_READY -eq 0 ]; then
+    echo "WARNING: PostgreSQL did not become ready in time"
+    podman logs "postgres-db-${SLURM_JOB_ID}" 2>&1 | tail -20
+  fi
 else
   echo "ERROR: PostgreSQL container failed to start!"
+  echo "Container logs:"
   podman logs "postgres-db-${SLURM_JOB_ID}" 2>&1 || true
+  echo ""
+  echo "NOTE: Database features will not be available, but app will continue."
+  echo "Video processing will still work without database tracking."
 fi
-
-echo "Waiting for PostgreSQL to be ready..."
-sleep 3
 
 # ---------------------------------------------------------------------------
 # Build the StudyBuzz app image
@@ -126,11 +148,17 @@ echo "TIMING - StudyBuzz Flask app started at: $(date)"
 # Initialize database schema
 # ---------------------------------------------------------------------------
 echo "Initializing database schema..."
-podman exec "studybuzz-app-${SLURM_JOB_ID}" python init_db.py
-if [ $? -eq 0 ]; then
-  echo "Database schema initialized successfully."
+if podman ps --filter "name=postgres-db-${SLURM_JOB_ID}" --format "{{.Names}}" | grep -q "postgres-db"; then
+  podman exec "studybuzz-app-${SLURM_JOB_ID}" python init_db.py
+  if [ $? -eq 0 ]; then
+    echo "Database schema initialized successfully."
+  else
+    echo "WARNING: Database initialization failed. Check logs."
+    echo "App will continue without database features."
+  fi
 else
-  echo "WARNING: Database initialization failed. Check logs."
+  echo "Skipping database initialization (PostgreSQL not running)"
+  echo "App will continue without database features."
 fi
 
 echo "StudyBuzz web UI is now accessible on port ${STUDYBUZZ_PORT}"
