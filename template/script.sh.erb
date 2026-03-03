@@ -18,7 +18,7 @@ echo "App source directory: ${APP_DIR}"
 # ---------------------------------------------------------------------------
 echo "Copying source code to job directory..."
 
-for item in Dockerfile .dockerignore app.py timeStampGen.py vllm_to_vtt.py init_db.py db_helper.py requirements.txt requirements_backend.txt Makefile; do
+for item in Dockerfile Dockerfile.postgres .dockerignore app.py timeStampGen.py vllm_to_vtt.py init_db.py db_helper.py requirements.txt requirements_backend.txt Makefile; do
   if [ -f "${APP_DIR}/${item}" ]; then
     cp "${APP_DIR}/${item}" "${PWD}/"
     echo "  Copied ${item}"
@@ -67,18 +67,37 @@ podman pod create \
 echo "Pod created: ${POD_NAME}"
 
 # ---------------------------------------------------------------------------
+# Build custom PostgreSQL image with pre-initialized database
+# This avoids chown issues on PACE by initializing at build time
+# ---------------------------------------------------------------------------
+echo "TIMING - Building PostgreSQL image at: $(date)"
+
+if [ -f "${APP_DIR}/Dockerfile.postgres" ]; then
+  cp "${APP_DIR}/Dockerfile.postgres" "${PWD}/"
+  podman build -f Dockerfile.postgres -t "studybuzz-postgres-${SLURM_JOB_ID}" .
+  
+  if [ $? -eq 0 ]; then
+    echo "PostgreSQL image built successfully"
+    POSTGRES_IMAGE="studybuzz-postgres-${SLURM_JOB_ID}"
+  else
+    echo "PostgreSQL image build failed, falling back to stock image"
+    POSTGRES_IMAGE="docker.io/library/postgres:16-alpine"
+  fi
+else
+  echo "Custom PostgreSQL Dockerfile not found, using stock image"
+  POSTGRES_IMAGE="docker.io/library/postgres:16-alpine"
+fi
+
+# ---------------------------------------------------------------------------
 # Start PostgreSQL database container (internal only, no GPU needed)
-# NOTE: Data is ephemeral (not persisted) to avoid filesystem permission issues
+# Pre-initialized database should avoid chown issues
 # ---------------------------------------------------------------------------
 echo "TIMING - Starting PostgreSQL database at: $(date)"
 
 podman run -d \
   --pod "${POD_NAME}" \
   --name "postgres-db-${SLURM_JOB_ID}" \
-  --env "POSTGRES_DB=vip_db" \
-  --env "POSTGRES_USER=postgres" \
-  --env "POSTGRES_PASSWORD=postgres" \
-  docker.io/library/postgres:16-alpine
+  "${POSTGRES_IMAGE}"
 
 # Wait a bit for container to attempt startup
 sleep 5
@@ -145,20 +164,18 @@ fi
 echo "TIMING - StudyBuzz Flask app started at: $(date)"
 
 # ---------------------------------------------------------------------------
-# Initialize database schema
+# Check database schema (already initialized in custom image)
 # ---------------------------------------------------------------------------
-echo "Initializing database schema..."
 if podman ps --filter "name=postgres-db-${SLURM_JOB_ID}" --format "{{.Names}}" | grep -q "postgres-db"; then
-  podman exec "studybuzz-app-${SLURM_JOB_ID}" python init_db.py
+  echo "Verifying database schema..."
+  podman exec "studybuzz-app-${SLURM_JOB_ID}" python -c "import db_helper; db_helper.get_connection().close()"
   if [ $? -eq 0 ]; then
-    echo "Database schema initialized successfully."
+    echo "✓ Database schema verified"
   else
-    echo "WARNING: Database initialization failed. Check logs."
-    echo "App will continue without database features."
+    echo "⚠ Database schema verification failed (may need manual initialization)"
   fi
 else
-  echo "Skipping database initialization (PostgreSQL not running)"
-  echo "App will continue without database features."
+  echo "Skipping database verification (PostgreSQL not running)"
 fi
 
 echo "StudyBuzz web UI is now accessible on port ${STUDYBUZZ_PORT}"

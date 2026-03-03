@@ -230,6 +230,8 @@ SB-V-1a/
 
 StudyBuzz uses PostgreSQL with the pgvector extension to track processed videos and store chapter embeddings.
 
+**PACE Compatibility:** A custom pre-initialized PostgreSQL Docker image is built at deployment time to avoid filesystem permission issues on PACE. The database is initialized during the image build process, eliminating the need for `chown` operations at runtime. If the custom image build fails, the application gracefully continues without database features.
+
 ### Database Schema
 
 **`lecture_videos` table:**
