@@ -15,9 +15,20 @@ import urllib.error
 # Import database helpers (optional - only if DB is available)
 try:
     import db_helper
-    DB_AVAILABLE = True
+    # Test connection immediately to verify database is reachable
+    try:
+        with db_helper.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+        DB_AVAILABLE = True
+        print("✓ Database connection successful")
+    except Exception as conn_err:
+        print(f"⚠ Database connection failed: {conn_err}")
+        print("  App will run without database features")
+        DB_AVAILABLE = False
 except Exception as e:
-    print(f"Database not available: {e}")
+    print(f"⚠ Database module not available: {e}")
+    print("  App will run without database features")
     DB_AVAILABLE = False
 
 BASE_DIR = Path(__file__).parent.absolute()
