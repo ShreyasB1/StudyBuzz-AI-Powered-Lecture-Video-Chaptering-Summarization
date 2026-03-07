@@ -689,6 +689,7 @@ def summarize_chapters_with_llm(
             for frame_info in chapter_frames[:32]:
                 with open(frame_info["path"], "rb") as bf:
                     frame_b64 = base64.b64encode(bf.read()).decode("utf-8")
+
                 user_content.append(
                     {
                         "type": "image_url",
