@@ -19,11 +19,11 @@ RUN pip install --upgrade pip && \
     pip install -r requirements.txt && \
     pip install -r requirements_backend.txt
 
-COPY app.py timeStampGen.py vllm_to_vtt.py ./
+COPY app.py timeStampGen.py vllm_to_vtt.py init_db.py ./
 COPY static/ static/
 
 RUN mkdir -p uploads output/video
 
 EXPOSE 5000
 
-CMD ["python", "app.py"]
+CMD ["sh", "-c", "python init_db.py && python app.py"]

@@ -25,6 +25,6 @@ echo "Pulling Mistral vLLM Docker image..."
 podman pull docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129
 
 echo "Pulling Whisper vLLM Docker image..."
-podman pull docker.io/vllm/vllm-openai:v0.14.0
+podman pull docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129
 
 echo "Install complete. All images are ready."

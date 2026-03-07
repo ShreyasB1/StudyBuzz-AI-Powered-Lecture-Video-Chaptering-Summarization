@@ -1,4 +1,4 @@
-.PHONY: build-app run-app run-mistral run-whisper deploy clean help
+.PHONY: build-app run-app run-mistral run-whisper run-db deploy clean help
 
 APP_IMAGE ?= studybuzz-app
 APP_CONTAINER ?= studybuzz-app
@@ -6,6 +6,7 @@ APP_PORT ?= 5000
 
 MISTRAL_CONTAINER ?= studybuzz-mistral
 WHISPER_CONTAINER ?= studybuzz-whisper
+DB_CONTAINER ?= pgvector_local
 HUGGINGFACE_CACHE_PATH ?= $(HOME)/huggingface
 HF_TOKEN ?=
 NUM_GPUS ?= 8
@@ -18,6 +19,7 @@ help:
 	@echo "  make run-app       - Build and run the StudyBuzz container"
 	@echo "  make run-mistral   - Run the Mistral vLLM container"
 	@echo "  make run-whisper   - Run the Whisper vLLM container"
+	@echo "  make run-db        - Run the PostgreSQL/pgvector database container"
 	@echo "  make deploy        - Create pod and start all containers"
 	@echo "  make clean         - Stop and remove all containers"
 
@@ -30,6 +32,7 @@ run-app: build-app
 	@mkdir -p uploads output/video
 	podman run -d \
 	  -p $(APP_PORT):5000 \
+	  -e VIP_DB_HOST=host.containers.internal \
 	  -v $(PWD)/uploads:/app/uploads:Z \
 	  -v $(PWD)/output:/app/output:Z \
 	  --name $(APP_CONTAINER) \
@@ -82,7 +85,7 @@ run-whisper:
 	  --env "VLLM_USE_DEEP_GEMM=0" \
 	  --entrypoint /bin/bash \
 	  --name $(WHISPER_CONTAINER) \
-	  docker.io/vllm/vllm-openai:v0.14.0 \
+	  docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129 \
 	  -c "pip install librosa soundfile && python3 -m vllm.entrypoints.openai.api_server \
 	    --model openai/whisper-large-v3 \
 	    --served-model-name whisper \
@@ -96,7 +99,22 @@ run-whisper:
 	    --port 8000"
 	@echo "Whisper vLLM started on port 8001 (model loading takes ~2 min)"
 
-deploy: build-app
+run-db:
+	@echo "Starting PostgreSQL pgvector database container..."
+	@mkdir -p $(PWD)/my_pgdata
+	@podman ps -a --filter "name=^$(DB_CONTAINER)$$" --format "{{.Names}}" | grep -q $(DB_CONTAINER) && podman rm -f $(DB_CONTAINER) || true
+	podman run -d \
+	  --name $(DB_CONTAINER) \
+	  --userns=keep-id \
+	  --net=host \
+	  -e POSTGRES_PASSWORD=mysecret \
+	  -e PGDATA=/var/lib/postgresql/data/pgdata \
+	  -e PGPORT=5432 \
+	  -v $(PWD)/my_pgdata:/var/lib/postgresql/data:Z \
+	  pgvector/pgvector:pg18-trixie
+	@echo "PostgreSQL pgvector database started on port 5432"
+
+deploy: build-app run-db
 	@echo "Creating pod for shared networking..."
 	@podman pod exists studybuzz-pod || podman pod create --name studybuzz-pod -p $(APP_PORT):5000
 	@echo "Starting Mistral vLLM in pod..."
@@ -143,7 +161,7 @@ deploy: build-app
 	  --env "HUGGING_FACE_HUB_TOKEN=$(HF_TOKEN)" \
 	  --env "VLLM_USE_DEEP_GEMM=0" \
 	  --entrypoint /bin/bash \
-	  docker.io/vllm/vllm-openai:v0.14.0 \
+	  docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129 \
 	  -c "pip install librosa soundfile && python3 -m vllm.entrypoints.openai.api_server \
 	    --model openai/whisper-large-v3 \
 	    --served-model-name whisper \
@@ -160,6 +178,7 @@ deploy: build-app
 	podman run -d \
 	  --pod studybuzz-pod \
 	  --name $(APP_CONTAINER) \
+	  -e VIP_DB_HOST=host.containers.internal \
 	  -v $(PWD)/uploads:/app/uploads:Z \
 	  -v $(PWD)/output:/app/output:Z \
 	  $(APP_IMAGE)
@@ -174,5 +193,6 @@ clean:
 	-podman rm -f $(APP_CONTAINER)
 	-podman rm -f $(MISTRAL_CONTAINER)
 	-podman rm -f $(WHISPER_CONTAINER)
+	-podman rm -f $(DB_CONTAINER)
 	-podman pod rm -f studybuzz-pod 2>/dev/null || true
 	@echo "All containers and pod removed"
