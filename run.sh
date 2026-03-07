@@ -18,12 +18,15 @@ export XDG_RUNTIME_DIR="/tmp/run-$(id -u)"
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 
-# Clean up any existing containers
-make clean
-
-# Deploy the containers
-echo "Deploying via Makefile..."
-make deploy HF_TOKEN="${HF_TOKEN}" NUM_GPUS=8 HUGGINGFACE_CACHE_PATH="${CACHE_PATH}"
+# Check if the deployment is already running
+if podman pod exists studybuzz-pod; then
+    echo "Existing deployment found. Performing fast app update..."
+    make update-app
+else
+    echo "No existing deployment found (or clean was run). Deploying full stack via Makefile..."
+    make clean
+    make deploy HF_TOKEN="${HF_TOKEN}" NUM_GPUS=8 HUGGINGFACE_CACHE_PATH="${CACHE_PATH}"
+fi
 
 echo "=========================================================="
 echo "StudyBuzz is running!"

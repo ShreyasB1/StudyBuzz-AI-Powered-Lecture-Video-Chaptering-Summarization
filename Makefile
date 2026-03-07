@@ -1,4 +1,4 @@
-.PHONY: build-app run-app run-mistral run-whisper run-db deploy clean help
+.PHONY: build-app run-app run-mistral run-whisper run-db deploy update-app clean help
 
 APP_IMAGE ?= studybuzz-app
 APP_CONTAINER ?= studybuzz-app
@@ -21,6 +21,7 @@ help:
 	@echo "  make run-whisper   - Run the Whisper vLLM container"
 	@echo "  make run-db        - Run the PostgreSQL/pgvector database container"
 	@echo "  make deploy        - Create pod and start all containers"
+	@echo "  make update-app    - Fast restart of JUST the Flask application container"
 	@echo "  make clean         - Stop and remove all containers"
 
 build-app:
@@ -173,7 +174,16 @@ deploy: build-app run-db
 	    --trust-remote-code \
 	    --host 0.0.0.0 \
 	    --port 8001"
-	@echo "Starting StudyBuzz app in pod..."
+	  -v $(PWD)/output:/app/output:Z \
+	  $(APP_IMAGE)
+	@echo ""
+	@echo "Deployment complete!"
+	@echo "StudyBuzz:  http://localhost:$(APP_PORT)"
+	@echo "Mistral:   http://localhost:8000"
+	@echo "Whisper:   http://localhost:8001"
+
+update-app: build-app
+	@echo "Updating StudyBuzz app container..."
 	@podman ps -a --filter "name=^$(APP_CONTAINER)$$" --format "{{.Names}}" | grep -q $(APP_CONTAINER) && podman rm -f $(APP_CONTAINER) || true
 	podman run -d \
 	  --pod studybuzz-pod \
@@ -183,10 +193,7 @@ deploy: build-app run-db
 	  -v $(PWD)/output:/app/output:Z \
 	  $(APP_IMAGE)
 	@echo ""
-	@echo "Deployment complete!"
-	@echo "StudyBuzz:  http://localhost:$(APP_PORT)"
-	@echo "Mistral:   http://localhost:8000"
-	@echo "Whisper:   http://localhost:8001"
+	@echo "App Update Complete! Fast refresh finished."
 
 clean:
 	@echo "Removing containers..."
