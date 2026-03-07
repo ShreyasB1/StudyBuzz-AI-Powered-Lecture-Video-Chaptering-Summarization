@@ -721,8 +721,10 @@ def summarize_chapters_with_llm(
                         return None
                     response_data = json.loads(response.read().decode("utf-8"))
             except error.HTTPError as e:
+                error_body = e.read().decode("utf-8")
                 print(
-                    f"Warning: LLM returned HTTPError {e.code} for chapter {chapter_idx}."
+                    f"Warning: LLM returned HTTPError {e.code} for chapter {chapter_idx}. "
+                    f"Reason: {error_body[:200]}"
                 )
                 return None
             except error.URLError as e:
