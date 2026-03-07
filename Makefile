@@ -78,12 +78,12 @@ run-mistral:
 run-whisper:
 	@echo "Starting Whisper vLLM container..."
 	podman run -d \
+	  --pod studybuzz-pod \
 	  --restart unless-stopped \
 	  --device nvidia.com/gpu=all \
 	  --security-opt=label=disable \
 	  --ipc=host \
 	  -v $(HUGGINGFACE_CACHE_PATH):/root/.cache/huggingface \
-	  -p 8001:8000 \
 	  --env "HUGGING_FACE_HUB_TOKEN=$(HF_TOKEN)" \
 	  --env "VLLM_USE_DEEP_GEMM=0" \
 	  --entrypoint /bin/bash \
@@ -99,16 +99,16 @@ run-whisper:
 	    --gpu-memory-utilization 0.075 \
 	    --trust-remote-code \
 	    --host 0.0.0.0 \
-	    --port 8000"
+	    --port 8001"
 	@echo "Whisper vLLM started on port 8001 (model loading takes ~2 min)"
 
 run-embedder:
 	@echo "Starting Nemotron vLLM embedder container..."
 	podman run -d \
+	  --pod studybuzz-pod \
 	  --device nvidia.com/gpu=all \
 	  --security-opt=label=disable \
 	  --ipc=host \
-	  -p 8002:8000 \
 	  -v $(HUGGINGFACE_CACHE_PATH):/root/.cache/huggingface \
 	  --env "HUGGING_FACE_HUB_TOKEN=$(HF_TOKEN)" \
 	  --env "CUDA_VISIBLE_DEVICES=4,5,6,7" \
@@ -120,7 +120,9 @@ run-embedder:
 	  --gpu-memory-utilization 0.07 \
 	  --max-model-len 32768 \
 	  --trust-remote-code \
-	  --dtype bfloat16
+	  --dtype bfloat16 \
+	  --host 0.0.0.0 \
+	  --port 8002
 	@echo "Nemotron vLLM embedder started on port 8002"
 
 run-db:
@@ -140,7 +142,7 @@ run-db:
 
 deploy: build-app run-db
 	@echo "Creating pod for shared networking..."
-	@podman pod exists studybuzz-pod || podman pod create --name studybuzz-pod -p $(APP_PORT):5000 -p 8000:8000 -p 8001:8001 -p 8002:8000
+	@podman pod exists studybuzz-pod || podman pod create --name studybuzz-pod -p $(APP_PORT):5000 -p 8000:8000 -p 8001:8001 -p 8002:8002
 	@echo "Starting Mistral vLLM in pod..."
 	@mkdir -p output/video uploads
 	@podman ps -a --filter "name=^$(MISTRAL_CONTAINER)$$" --format "{{.Names}}" | grep -q $(MISTRAL_CONTAINER) && podman rm -f $(MISTRAL_CONTAINER) || true
