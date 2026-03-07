@@ -84,6 +84,7 @@ run-whisper:
 	  -p 8001:8000 \
 	  --env "HUGGING_FACE_HUB_TOKEN=$(HF_TOKEN)" \
 	  --env "VLLM_USE_DEEP_GEMM=0" \
+	  --env "VLLM_USE_V1=0" \
 	  --entrypoint /bin/bash \
 	  --name $(WHISPER_CONTAINER) \
 	  docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129 \
@@ -161,6 +162,7 @@ deploy: build-app run-db
 	  -v $(HUGGINGFACE_CACHE_PATH):/root/.cache/huggingface \
 	  --env "HUGGING_FACE_HUB_TOKEN=$(HF_TOKEN)" \
 	  --env "VLLM_USE_DEEP_GEMM=0" \
+	  --env "VLLM_USE_V1=0" \
 	  --entrypoint /bin/bash \
 	  docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129 \
 	  -c "pip install librosa soundfile && python3 -m vllm.entrypoints.openai.api_server \

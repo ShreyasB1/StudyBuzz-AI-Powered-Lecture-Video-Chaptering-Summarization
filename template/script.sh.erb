@@ -234,6 +234,7 @@ if [ -n "${HUGGINGFACE_CACHE_PATH}" ] && [ -d "${HUGGINGFACE_CACHE_PATH}" ]; the
     -v "${HUGGINGFACE_CACHE_PATH}:/root/.cache/huggingface" \
     "${HF_TOKEN_ARGS[@]}" \
     --env "VLLM_USE_DEEP_GEMM=0" \
+    --env "VLLM_USE_V1=0" \
     --entrypoint /bin/bash \
     docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129 \
     -c "pip install librosa soundfile && python3 -m vllm.entrypoints.openai.api_server \
