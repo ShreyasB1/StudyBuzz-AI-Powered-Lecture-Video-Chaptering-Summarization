@@ -232,8 +232,18 @@ SB-V-1a/
 │   └── clean.sh                # Container cleanup
 ├── Makefile                    # Manual container management
 ├── install.sh                  # One-time image pre-build
-├── uploads/                    # Uploaded video files
-└── output/                     # Generated artifacts
+├── uploads/                     # Uploaded video files
+└── output/                      # Generated artifacts output_folder
+    └── <VIDEO_HASH>/            # Deterministic SHA-256 folder per video
+        ├── source_video.mp4     # Original video copied here
+        ├── full_transcript.vtt  # Raw Whisper transcript
+        ├── timestamps.txt       # Raw Mistral timestamp generation
+        ├── chapters_summary.json# Combined JSON of all summaries
+        ├── chapter_01_Intro/    # Nested folder per chapter
+        │   ├── transcript.vtt   # VTT slice for this chapter 
+        │   ├── summary.json     # Summary for this chapter
+        │   └── frames/          # Extracted visual frames
+        └── chapter_02_Body/     # Next chapter...
 ```
 
 ---
