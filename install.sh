@@ -18,13 +18,16 @@ done
 echo "Setting execute permissions on scripts..."
 chmod +x template/script.sh.erb template/clean.sh template/after.sh install.sh
 
-echo "Building StudyBuzz Docker image..."
-make build-app
+echo "Building StudyBuzz Docker image and pulling vLLM image in parallel..."
 
-echo "Pulling Mistral vLLM Docker image..."
-podman pull docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129
+make build-app &
+PID_BUILD=$!
 
-echo "Pulling Whisper vLLM Docker image..."
-podman pull docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129
+podman pull docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129 &
+PID_PULL=$!
+
+# Wait for both background processes to finish
+wait $PID_BUILD
+wait $PID_PULL
 
 echo "Install complete. All images are ready."
