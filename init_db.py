@@ -4,7 +4,7 @@ import psycopg
 # Basic config (can be overridden via env vars)
 DB_NAME = os.getenv("VIP_DB_NAME", "vip_db")
 DB_USER = os.getenv("VIP_DB_USER", "postgres")
-DB_PASSWORD = os.getenv("VIP_DB_PASSWORD", "postgres")
+DB_PASSWORD = os.getenv("VIP_DB_PASSWORD", "mysecret")
 DB_HOST = os.getenv("VIP_DB_HOST", "localhost")
 DB_PORT = int(os.getenv("VIP_DB_PORT", "5432"))
 
