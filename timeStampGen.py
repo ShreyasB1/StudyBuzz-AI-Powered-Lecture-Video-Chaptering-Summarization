@@ -121,7 +121,6 @@ def transcribe_audio_with_whisper(mp3_path: str, output_txt_path: str) -> bool:
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
 
-    output_txt_path = mp3_path + ".vtt"
     host_ip = "localhost"
     port = "8001"
     model_name = "whisper"
