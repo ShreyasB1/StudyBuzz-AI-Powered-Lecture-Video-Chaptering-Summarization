@@ -21,7 +21,7 @@ chmod 700 "$XDG_RUNTIME_DIR"
 # Check if the deployment is already running
 if podman pod exists studybuzz-pod; then
     echo "Existing deployment found. Performing fast app update..."
-    make update-app
+    make update-app HF_TOKEN="${HF_TOKEN}" HUGGINGFACE_CACHE_PATH="${CACHE_PATH}"
 else
     echo "No existing deployment found (or clean was run). Deploying full stack via Makefile..."
     make clean
