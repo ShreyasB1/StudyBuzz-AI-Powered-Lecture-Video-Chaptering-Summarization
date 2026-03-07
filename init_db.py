@@ -75,7 +75,7 @@ def init_schema():
                                     ON DELETE CASCADE,
                     chapter_path    TEXT        NOT NULL,
                     model_name      TEXT        NOT NULL,
-                    embedding       VECTOR(1536) NOT NULL,
+                    embedding       VECTOR(4096) NOT NULL,
                     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     UNIQUE (video_hash, chapter_path, model_name)
                 );

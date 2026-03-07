@@ -12,6 +12,7 @@ from typing import Optional
 from urllib import request, error
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import psycopg
+import openai
 from init_db import DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT
 
 
@@ -1013,6 +1014,93 @@ Transcript:
         return False
 
 
+def generate_chapter_embeddings(
+    video_hash: str,
+    summary_json_path: str,
+    chapter_transcripts_dir: str,
+    db_conn_str: str,
+    api_url: str = "http://localhost:8002/v1/embeddings",
+    model_name: str = "nemotron",
+) -> bool:
+    """
+    Generate and store vector embeddings for each chapter's combined text content.
+    """
+    if not os.path.exists(summary_json_path):
+        print(f"Error: Summaries file not found at '{summary_json_path}'")
+        return False
+
+    try:
+        with open(summary_json_path, "r", encoding="utf-8") as f:
+            summaries = json.load(f)
+    except Exception as e:
+        print(f"Error loading summaries JSON: {e}")
+        return False
+
+    success = True
+    print(f"Generating embeddings for {len(summaries)} chapter(s)...")
+
+    for idx, chapter in enumerate(summaries, 1):
+        safe_title = _sanitize_title(chapter.get("title", f"Chapter {idx}"))
+        chapter_folder_name = f"chapter_{idx:02d}_{safe_title}"
+        chapter_folder_path = os.path.join(chapter_transcripts_dir, chapter_folder_name)
+
+        # We need the relative path for the database logic
+        chapter_rel_path = f"{video_hash}/{chapter_folder_name}"
+
+        transcript_path = os.path.join(chapter_folder_path, "transcript.vtt")
+        transcript_text = ""
+
+        if os.path.exists(transcript_path):
+            try:
+                with open(transcript_path, "r", encoding="utf-8") as f:
+                    transcript_content = f.read()
+                transcript_text = _extract_plain_text_from_vtt(
+                    transcript_content
+                ).strip()
+                if not transcript_text:
+                    transcript_text = transcript_content.strip()
+            except IOError as e:
+                print(f"Warning: Could not read transcript for chapter {idx}: {e}")
+
+        summary_text = chapter.get("summary", "")
+
+        # Combine transcript and summary exclusively for this chapter
+        combined_text = f"Chapter Title: {chapter.get('title')}\n\nSummary:\n{summary_text}\n\nTranscript:\n{transcript_text}"
+
+        try:
+            client = openai.OpenAI(
+                base_url=api_url.rsplit("/embeddings", 1)[0], api_key="empty"
+            )
+
+            response = client.embeddings.create(model=model_name, input=combined_text)
+
+            embedding_vector = response.data[0].embedding
+
+            # Store to Postgres
+            with psycopg.connect(db_conn_str, autocommit=True) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO chapter_embeddings (video_hash, chapter_path, model_name, embedding)
+                        VALUES (%s, %s, %s, %s::vector)
+                        ON CONFLICT (video_hash, chapter_path, model_name) 
+                        DO UPDATE SET embedding = EXCLUDED.embedding
+                        """,
+                        (
+                            video_hash,
+                            chapter_rel_path,
+                            model_name,
+                            embedding_vector,
+                        ),
+                    )
+            print(f"  ✓ Saved '{model_name}' embedding for Chapter {idx}")
+        except Exception as e:
+            print(f"  ✗ Failed to generate/store embedding for chapter {idx}: {e}")
+            success = False
+
+    return success
+
+
 def main():
     """Main function to parse arguments and run the pipeline."""
     parser = argparse.ArgumentParser(
@@ -1167,7 +1255,16 @@ def main():
                 print("Pipeline stopped at chapter summarization.")
                 return
 
-        # 7. Mark as complete in database
+            # 7. Generate Nemotron Embeddings for semantic search
+            print("-" * 20)
+            if not generate_chapter_embeddings(
+                video_hash, summary_json_path, chapter_dir, conn_str
+            ):
+                print(
+                    "Warning: Chapter embedding generation encountered errors, but continuing to finalize."
+                )
+
+        # 8. Mark as complete in database
         try:
             with psycopg.connect(conn_str, autocommit=True) as conn:
                 with conn.cursor() as cur:
@@ -1179,7 +1276,7 @@ def main():
         except Exception as e:
             print(f"Warning: Failed to update database status: {e}")
 
-        # 8. Cleanup scratch files
+        # 9. Cleanup scratch files
         print("Cleaning up scratch files...")
         if os.path.exists(out_audio):
             try:

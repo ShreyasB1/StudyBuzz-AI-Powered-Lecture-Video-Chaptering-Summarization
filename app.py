@@ -291,11 +291,16 @@ def upload_video():
 
     mistral_status = _check_service("http://localhost:8000/health")
     whisper_status = _check_service("http://localhost:8001/health")
-    if mistral_status != "ready" or whisper_status != "ready":
+    embedder_status = _check_service("http://localhost:8002/health")
+    if (
+        mistral_status != "ready"
+        or whisper_status != "ready"
+        or embedder_status != "ready"
+    ):
         return (
             jsonify(
                 {
-                    "error": f"Model servers not ready yet. Mistral: {mistral_status}, Whisper: {whisper_status}. "
+                    "error": f"Model servers not ready yet. Mistral: {mistral_status}, Whisper: {whisper_status}, Nemotron: {embedder_status}. "
                     "Please wait for models to finish loading and try again."
                 }
             ),
@@ -392,6 +397,7 @@ def health_check():
                 "service": "studybuzz",
                 "mistral": _check_service("http://localhost:8000/health"),
                 "whisper": _check_service("http://localhost:8001/health"),
+                "nemotron": _check_service("http://localhost:8002/health"),
             }
         ),
         200,

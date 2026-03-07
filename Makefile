@@ -6,6 +6,7 @@ APP_PORT ?= 5000
 
 MISTRAL_CONTAINER ?= studybuzz-mistral
 WHISPER_CONTAINER ?= studybuzz-whisper
+EMBED_CONTAINER ?= studybuzz-embedder
 DB_CONTAINER ?= pgvector_local
 HUGGINGFACE_CACHE_PATH ?= $(HOME)/huggingface
 HF_TOKEN ?=
@@ -19,6 +20,7 @@ help:
 	@echo "  make run-app       - Build and run the StudyBuzz container"
 	@echo "  make run-mistral   - Run the Mistral vLLM container"
 	@echo "  make run-whisper   - Run the Whisper vLLM container"
+	@echo "  make run-embedder  - Run the Nemotron-8B embedder container"
 	@echo "  make run-db        - Run the PostgreSQL/pgvector database container"
 	@echo "  make deploy        - Create pod and start all containers"
 	@echo "  make update-app    - Fast restart of JUST the Flask application container"
@@ -100,6 +102,27 @@ run-whisper:
 	    --port 8000"
 	@echo "Whisper vLLM started on port 8001 (model loading takes ~2 min)"
 
+run-embedder:
+	@echo "Starting Nemotron vLLM embedder container..."
+	podman run -d \
+	  --device nvidia.com/gpu=all \
+	  --security-opt=label=disable \
+	  --ipc=host \
+	  -p 8002:8000 \
+	  -v $(HUGGINGFACE_CACHE_PATH):/root/.cache/huggingface \
+	  --env "HUGGING_FACE_HUB_TOKEN=$(HF_TOKEN)" \
+	  --env "CUDA_VISIBLE_DEVICES=4,5,6,7" \
+	  --name $(EMBED_CONTAINER) \
+	  docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129 \
+	  --model nvidia/llama-embed-nemotron-8b \
+	  --served-model-name nemotron \
+	  --tensor-parallel-size 4 \
+	  --gpu-memory-utilization 0.07 \
+	  --max-model-len 32768 \
+	  --trust-remote-code \
+	  --dtype bfloat16
+	@echo "Nemotron vLLM embedder started on port 8002"
+
 run-db:
 	@echo "Starting PostgreSQL pgvector database container..."
 	@mkdir -p $(PWD)/my_pgdata
@@ -117,7 +140,7 @@ run-db:
 
 deploy: build-app run-db
 	@echo "Creating pod for shared networking..."
-	@podman pod exists studybuzz-pod || podman pod create --name studybuzz-pod -p $(APP_PORT):5000 -p 8000:8000 -p 8001:8001
+	@podman pod exists studybuzz-pod || podman pod create --name studybuzz-pod -p $(APP_PORT):5000 -p 8000:8000 -p 8001:8001 -p 8002:8000
 	@echo "Starting Mistral vLLM in pod..."
 	@mkdir -p output/video uploads
 	@podman ps -a --filter "name=^$(MISTRAL_CONTAINER)$$" --format "{{.Names}}" | grep -q $(MISTRAL_CONTAINER) && podman rm -f $(MISTRAL_CONTAINER) || true
@@ -235,6 +258,7 @@ clean:
 	-podman rm -t 0 -f $(APP_CONTAINER)
 	-podman rm -t 0 -f $(MISTRAL_CONTAINER)
 	-podman rm -t 0 -f $(WHISPER_CONTAINER)
+	-podman rm -t 0 -f $(EMBED_CONTAINER)
 	-podman rm -t 0 -f $(DB_CONTAINER)
 	-podman pod rm -t 0 -f studybuzz-pod 2>/dev/null || true
 	@echo "All containers and pod removed"
