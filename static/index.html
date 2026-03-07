@@ -92,13 +92,14 @@
         el.innerHTML =
           '<div class="health-row">' + dot(data.status) + ' &mdash; StudyBuzz App</div>' +
           '<div class="health-row">' + dot(data.mistral) + ' &mdash; Mistral LLM (port 8000)</div>' +
-          '<div class="health-row">' + dot(data.whisper) + ' &mdash; Whisper STT (port 8001)</div>';
-        if (data.mistral === 'ready' && data.whisper === 'ready') {
+          '<div class="health-row">' + dot(data.whisper) + ' &mdash; Whisper STT (port 8001)</div>' +
+          '<div class="health-row">' + dot(data.nemotron) + ' &mdash; Nemotron Embeddings (port 8002)</div>';
+        if (data.mistral === 'ready' && data.whisper === 'ready' && data.nemotron === 'ready') {
           modelsReady = true;
           el.innerHTML += '<div class="status success" style="margin-top:0.5rem">All models loaded. Ready to process videos.</div>';
         } else {
           modelsReady = false;
-          el.innerHTML += '<div class="status warn" style="margin-top:0.5rem">Models are still loading (auto-checking every 10s). Video processing will not work until both show "ready". Mistral takes ~20 min, Whisper ~2 min.</div>';
+          el.innerHTML += '<div class="status warn" style="margin-top:0.5rem">Models are still loading (auto-checking every 10s). Video processing will not work until all show "ready". Mistral takes ~20 min, Whisper ~2 min.</div>';
         }
       } catch (e) {
         el.innerHTML = '<div class="status error">Error checking health: ' + e.message + '</div>';
