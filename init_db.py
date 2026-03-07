@@ -95,10 +95,14 @@ def init_schema():
             print("Ensured ANN index on chapter_embeddings.embedding exists")
 
 
-def main():
-    create_database_if_needed()
-    init_schema()
+def insert_dummy_data():
+    """Placeholder for inserting dummy data."""
+    print("No dummy data to insert.")
 
 
 if __name__ == "__main__":
-    main()
+    print("Initializing database...")
+    create_database_if_needed()
+    init_schema()
+    insert_dummy_data()
+    print("Database initialization complete.")

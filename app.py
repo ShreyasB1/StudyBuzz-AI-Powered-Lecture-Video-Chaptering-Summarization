@@ -12,6 +12,8 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 import threading
 import urllib.request
 import urllib.error
+import psycopg
+from init_db import DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT
 
 BASE_DIR = Path(__file__).parent.absolute()
 STATIC_DIR = BASE_DIR / "static"
@@ -186,6 +188,87 @@ def _process_video(job_id, video_path, video_basename):
 # ---------------------------------------------------------------------------
 # API endpoints
 # ---------------------------------------------------------------------------
+
+
+@app.route("/api/videos", methods=["GET"])
+def list_db_videos():
+    conn_str = f"dbname={DB_NAME} user={DB_USER} password={DB_PASSWORD} host={DB_HOST} port={DB_PORT}"
+    try:
+        with psycopg.connect(conn_str, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT video_hash, video_name, video_date 
+                    FROM lecture_videos 
+                    WHERE done_processing = TRUE 
+                    ORDER BY video_date DESC
+                    """
+                )
+                rows = cur.fetchall()
+
+        videos = [
+            {
+                "video_hash": row[0],
+                "video_name": row[1],
+                "video_date": row[2].isoformat() if row[2] else None,
+            }
+            for row in rows
+        ]
+        return jsonify({"videos": videos}), 200
+    except Exception as e:
+        return jsonify({"error": f"Database error: {e}"}), 500
+
+
+@app.route("/api/results/hash/<video_hash>", methods=["GET"])
+def get_results_by_hash(video_hash):
+    video_out_dir = OUTPUT_FOLDER / video_hash
+    if not video_out_dir.exists():
+        return jsonify({"error": "Video results not found"}), 404
+
+    results = {}
+
+    transcript_path = video_out_dir / "full_transcript.vtt"
+    if transcript_path.exists():
+        results["transcript"] = transcript_path.read_text(encoding="utf-8")
+
+    timestamps_path = video_out_dir / "timestamps.txt"
+    if timestamps_path.exists():
+        lines = timestamps_path.read_text(encoding="utf-8").strip().split("\n")
+        results["timestamps"] = [
+            {"time": l.split(" - ")[0].strip(), "title": l.split(" - ")[1].strip()}
+            for l in lines
+            if " - " in l
+        ]
+
+    summary_path = video_out_dir / "chapters_summary.json"
+    if summary_path.exists():
+        try:
+            results["summary"] = json.loads(summary_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            results["summary"] = []
+
+    # We don't have the original upload name unless we query the DB, but we can guess the extension.
+    # Looking for source_video.*
+    source_video = next(video_out_dir.glob("source_video.*"), None)
+    results["video_filename"] = (
+        source_video.name if source_video else "source_video.mp4"
+    )
+    results["video_hash"] = video_hash
+
+    return jsonify(results), 200
+
+
+@app.route("/api/video/hash/<video_hash>", methods=["GET"])
+def stream_video_by_hash(video_hash):
+    video_out_dir = OUTPUT_FOLDER / video_hash
+    if not video_out_dir.exists():
+        return jsonify({"error": "Video directory not found"}), 404
+
+    source_video = next(video_out_dir.glob("source_video.*"), None)
+    if not source_video or not source_video.exists():
+        return jsonify({"error": "Video file not found in output directory"}), 404
+
+    return send_file(str(source_video), mimetype="video/mp4")
 
 
 @app.route("/api/upload", methods=["POST"])

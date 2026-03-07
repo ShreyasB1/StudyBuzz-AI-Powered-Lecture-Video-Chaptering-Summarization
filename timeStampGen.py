@@ -11,6 +11,8 @@ import hashlib
 from typing import Optional
 from urllib import request, error
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import psycopg
+from init_db import DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT
 
 
 def _sanitize_title(title: str) -> str:
@@ -1061,6 +1063,25 @@ def main():
         video_out_dir = os.path.join(output_dir, video_hash)
         os.makedirs(video_out_dir, exist_ok=True)
 
+        # Log to Database
+        conn_str = f"dbname={DB_NAME} user={DB_USER} password={DB_PASSWORD} host={DB_HOST} port={DB_PORT}"
+        video_basename = os.path.basename(video_path)
+        try:
+            with psycopg.connect(conn_str, autocommit=True) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO lecture_videos (video_hash, folder_path, video_name, done_processing)
+                        VALUES (%s, %s, %s, FALSE)
+                        ON CONFLICT (video_hash) 
+                        DO UPDATE SET done_processing = FALSE, folder_path = EXCLUDED.folder_path, video_name = EXCLUDED.video_name
+                        """,
+                        (video_hash, video_out_dir, video_basename),
+                    )
+            print(f"Logged video {video_hash} to database as processing.")
+        except Exception as e:
+            print(f"Warning: Failed to log video to database: {e}")
+
         # Copy original video into the hash folder
         original_ext = os.path.splitext(video_path)[1]
         copied_video_path = os.path.join(video_out_dir, f"source_video{original_ext}")
@@ -1146,10 +1167,36 @@ def main():
                 print("Pipeline stopped at chapter summarization.")
                 return
 
+        # 7. Mark as complete in database
+        try:
+            with psycopg.connect(conn_str, autocommit=True) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE lecture_videos SET done_processing = TRUE WHERE video_hash = %s",
+                        (video_hash,),
+                    )
+            print("Successfully marked video as done_processing in database.")
+        except Exception as e:
+            print(f"Warning: Failed to update database status: {e}")
+
+        # 8. Cleanup scratch files
+        print("Cleaning up scratch files...")
+        if os.path.exists(out_audio):
+            try:
+                os.remove(out_audio)
+                print(f"Deleted {out_audio}")
+            except OSError as e:
+                print(f"Warning: Failed to delete {out_audio}: {e}")
+
+        if os.path.exists(frames_dir):
+            try:
+                shutil.rmtree(frames_dir)
+                print(f"Deleted {frames_dir}")
+            except OSError as e:
+                print(f"Warning: Failed to delete {frames_dir}: {e}")
+
         print("\n--- Pipeline finished for this file ---")
-        print(f"Audio file: {out_audio}")
-        print(f"Transcript file: {out_transcript}")
-        print(f"Timestamps file: {out_timestamps}")
+        print(f"Video Hash: {video_hash}")
         print(f"Chapter transcripts: {chapter_dir}")
         print(f"Pre-extracted Frames: {frames_dir}")
         print(f"Summary JSON: {summary_json_path}")
