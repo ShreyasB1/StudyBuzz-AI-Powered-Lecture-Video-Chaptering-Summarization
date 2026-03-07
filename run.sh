@@ -18,9 +18,9 @@ export XDG_RUNTIME_DIR="/tmp/run-$(id -u)"
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 
-# Check if the deployment is already running
-if podman pod exists studybuzz-pod; then
-    echo "Existing deployment found. Performing fast app update..."
+# Check if the deployment is already running with all containers
+if podman pod exists studybuzz-pod && podman ps -a --format "{{.Names}}" | grep -q 'studybuzz-embedder'; then
+    echo "Existing full deployment found. Performing fast app update..."
     make update-app HF_TOKEN="${HF_TOKEN}" HUGGINGFACE_CACHE_PATH="${CACHE_PATH}"
 else
     echo "No existing deployment found (or clean was run). Deploying full stack via Makefile..."
@@ -33,5 +33,6 @@ echo "StudyBuzz is running!"
 echo "Access the app at: http://$(hostname):5000"
 echo "Access Mistral at: http://$(hostname):8000"
 echo "Access Whisper at: http://$(hostname):8001"
+echo "Access Nemotron at: http://$(hostname):8002"
 echo "To view app logs: podman logs -f studybuzz-app"
 echo "=========================================================="

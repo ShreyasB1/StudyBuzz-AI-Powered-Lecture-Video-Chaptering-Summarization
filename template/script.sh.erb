@@ -62,7 +62,10 @@ POD_NAME="studybuzz-pod-${SLURM_JOB_ID}"
 
 podman pod create \
   --name "${POD_NAME}" \
-  -p "${STUDYBUZZ_PORT}:5000"
+  -p "${STUDYBUZZ_PORT}:5000" \
+  -p 8000:8000 \
+  -p 8001:8001 \
+  -p 8002:8002
 
 echo "Pod created: ${POD_NAME}"
 
@@ -271,6 +274,57 @@ if [ -n "${HUGGINGFACE_CACHE_PATH}" ] && [ -d "${HUGGINGFACE_CACHE_PATH}" ]; the
     done
     if [ ${WHISPER_ELAPSED} -ge ${WHISPER_TIMEOUT} ]; then
       echo "WARNING: Whisper health check timed out after ${WHISPER_TIMEOUT}s. Check podman logs whisper-vllm-${SLURM_JOB_ID}"
+    fi
+  ) &
+
+  # -------------------------------------------------------------------------
+  # Start Nemotron vLLM embedder container (port 8002, 4 GPUs shares)
+  # -------------------------------------------------------------------------
+  echo "TIMING - Starting Nemotron vLLM server at: $(date)"
+
+  podman run -d \
+    --pod "${POD_NAME}" \
+    --name "nemotron-vllm-${SLURM_JOB_ID}" \
+    --device nvidia.com/gpu=all \
+    --security-opt=label=disable \
+    --ipc=host \
+    -v "${HUGGINGFACE_CACHE_PATH}:/root/.cache/huggingface" \
+    "${HF_TOKEN_ARGS[@]}" \
+    --env "CUDA_VISIBLE_DEVICES=4,5,6,7" \
+    docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129 \
+    --model nvidia/llama-embed-nemotron-8b \
+    --served-model-name nemotron \
+    --tensor-parallel-size 4 \
+    --gpu-memory-utilization 0.07 \
+    --max-model-len 32768 \
+    --trust-remote-code \
+    --dtype bfloat16 \
+    --host 0.0.0.0 \
+    --port 8002
+
+  if podman ps --filter "name=nemotron-vllm-${SLURM_JOB_ID}" --format "{{.Names}}" | grep -q "nemotron-vllm"; then
+    echo "Nemotron vLLM container is running. Model loading takes ~2 minutes."
+  else
+    echo "ERROR: Nemotron vLLM container failed to start!"
+    podman logs "nemotron-vllm-${SLURM_JOB_ID}" 2>&1 || true
+  fi
+
+  # Monitor Nemotron readiness in the background
+  (
+    NEMO_ELAPSED=0
+    NEMO_INTERVAL=15
+    NEMO_TIMEOUT=600
+    while [ ${NEMO_ELAPSED} -lt ${NEMO_TIMEOUT} ]; do
+      if podman exec "studybuzz-app-${SLURM_JOB_ID}" python -c "import urllib.request; urllib.request.urlopen('http://localhost:8002/health', timeout=5)" > /dev/null 2>&1; then
+        echo "TIMING - Nemotron model fully loaded and ready at: $(date) (after ${NEMO_ELAPSED}s)"
+        break
+      fi
+      sleep ${NEMO_INTERVAL}
+      NEMO_ELAPSED=$((NEMO_ELAPSED + NEMO_INTERVAL))
+      echo "  Nemotron still loading... (${NEMO_ELAPSED}s elapsed)"
+    done
+    if [ ${NEMO_ELAPSED} -ge ${NEMO_TIMEOUT} ]; then
+      echo "WARNING: Nemotron health check timed out after ${NEMO_TIMEOUT}s. Check podman logs nemotron-vllm-${SLURM_JOB_ID}"
     fi
   ) &
 
