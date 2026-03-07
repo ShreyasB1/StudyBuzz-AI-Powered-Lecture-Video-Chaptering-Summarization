@@ -174,6 +174,13 @@ deploy: build-app run-db
 	    --trust-remote-code \
 	    --host 0.0.0.0 \
 	    --port 8001"
+	@echo "Starting StudyBuzz app container..."
+	@podman ps -a --filter "name=^$(APP_CONTAINER)$$" --format "{{.Names}}" | grep -q $(APP_CONTAINER) && podman rm -f $(APP_CONTAINER) || true
+	podman run -d \
+	  --pod studybuzz-pod \
+	  --name $(APP_CONTAINER) \
+	  -e VIP_DB_HOST=host.containers.internal \
+	  -v $(PWD)/uploads:/app/uploads:Z \
 	  -v $(PWD)/output:/app/output:Z \
 	  $(APP_IMAGE)
 	@echo ""
@@ -181,6 +188,33 @@ deploy: build-app run-db
 	@echo "StudyBuzz:  http://localhost:$(APP_PORT)"
 	@echo "Mistral:   http://localhost:8000"
 	@echo "Whisper:   http://localhost:8001"
+
+update-whisper:
+	@echo "Updating Whisper container..."
+	@podman ps -a --filter "name=^$(WHISPER_CONTAINER)$$" --format "{{.Names}}" | grep -q $(WHISPER_CONTAINER) && podman rm -f $(WHISPER_CONTAINER) || true
+	podman run -d \
+	  --pod studybuzz-pod \
+	  --name $(WHISPER_CONTAINER) \
+	  --device nvidia.com/gpu=all \
+	  --security-opt=label=disable \
+	  --ipc=host \
+	  -v $(HUGGINGFACE_CACHE_PATH):/root/.cache/huggingface \
+	  --env "HUGGING_FACE_HUB_TOKEN=$(HF_TOKEN)" \
+	  --env "VLLM_USE_DEEP_GEMM=0" \
+	  --entrypoint /bin/bash \
+	  docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129 \
+	  -c "pip install librosa soundfile && python3 -m vllm.entrypoints.openai.api_server \
+	    --model openai/whisper-large-v3 \
+	    --served-model-name whisper \
+	    --dtype bfloat16 \
+	    --max-model-len 448 \
+	    --tensor-parallel-size 1 \
+	    --swap-space 16 \
+	    --gpu-memory-utilization 0.075 \
+	    --trust-remote-code \
+	    --host 0.0.0.0 \
+	    --port 8001"
+	@echo "Whisper update complete! Re-loading the model..."
 
 update-app: build-app
 	@echo "Updating StudyBuzz app container..."
