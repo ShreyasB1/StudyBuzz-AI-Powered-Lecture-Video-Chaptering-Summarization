@@ -233,9 +233,10 @@ update-app: build-app
 
 clean:
 	@echo "Removing containers..."
-	-podman rm -f $(APP_CONTAINER)
-	-podman rm -f $(MISTRAL_CONTAINER)
-	-podman rm -f $(WHISPER_CONTAINER)
-	-podman rm -f $(DB_CONTAINER)
-	-podman pod rm -f studybuzz-pod 2>/dev/null || true
+	-pkill -9 -u $$USER conmon || true
+	-podman rm -t 0 -f $(APP_CONTAINER)
+	-podman rm -t 0 -f $(MISTRAL_CONTAINER)
+	-podman rm -t 0 -f $(WHISPER_CONTAINER)
+	-podman rm -t 0 -f $(DB_CONTAINER)
+	-podman pod rm -t 0 -f studybuzz-pod 2>/dev/null || true
 	@echo "All containers and pod removed"
