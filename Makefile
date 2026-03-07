@@ -84,7 +84,6 @@ run-whisper:
 	  -p 8001:8000 \
 	  --env "HUGGING_FACE_HUB_TOKEN=$(HF_TOKEN)" \
 	  --env "VLLM_USE_DEEP_GEMM=0" \
-	  --env "VLLM_USE_V1=0" \
 	  --entrypoint /bin/bash \
 	  --name $(WHISPER_CONTAINER) \
 	  docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129 \
@@ -95,7 +94,7 @@ run-whisper:
 	    --max-model-len 448 \
 	    --tensor-parallel-size 1 \
 	    --swap-space 16 \
-	    --gpu-memory-utilization 0.09 \
+	    --gpu-memory-utilization 0.075 \
 	    --trust-remote-code \
 	    --host 0.0.0.0 \
 	    --port 8000"
@@ -162,7 +161,6 @@ deploy: build-app run-db
 	  -v $(HUGGINGFACE_CACHE_PATH):/root/.cache/huggingface \
 	  --env "HUGGING_FACE_HUB_TOKEN=$(HF_TOKEN)" \
 	  --env "VLLM_USE_DEEP_GEMM=0" \
-	  --env "VLLM_USE_V1=0" \
 	  --entrypoint /bin/bash \
 	  docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129 \
 	  -c "pip install librosa soundfile && python3 -m vllm.entrypoints.openai.api_server \
@@ -172,7 +170,7 @@ deploy: build-app run-db
 	    --max-model-len 448 \
 	    --tensor-parallel-size 1 \
 	    --swap-space 16 \
-	    --gpu-memory-utilization 0.09 \
+	    --gpu-memory-utilization 0.075 \
 	    --trust-remote-code \
 	    --host 0.0.0.0 \
 	    --port 8001"

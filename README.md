@@ -122,7 +122,6 @@ podman run --device nvidia.com/gpu=all \
   --ipc=host \
   --env "HUGGING_FACE_HUB_TOKEN=<YOUR_HF_TOKEN>" \
   -e VLLM_USE_DEEP_GEMM=0 \
-  -e VLLM_USE_V1=0 \
   docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129 \
   -c "pip install librosa soundfile && python3 -m vllm.entrypoints.openai.api_server \
     --model openai/whisper-large-v3 \
@@ -131,7 +130,7 @@ podman run --device nvidia.com/gpu=all \
     --max-model-len 448 \
     --tensor-parallel-size 1 \
     --swap-space 16 \
-    --gpu-memory-utilization 0.09 \
+    --gpu-memory-utilization 0.075 \
     --trust-remote-code \
     --host 0.0.0.0 \
     --port 8000"
