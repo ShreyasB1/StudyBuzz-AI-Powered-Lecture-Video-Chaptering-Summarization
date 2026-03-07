@@ -69,7 +69,6 @@ run-mistral:
 	  --config-format mistral \
 	  --enable-auto-tool-choice \
 	  --tool-call-parser mistral \
-	  --allowed-local-media-path /root/video \
 	  --host 0.0.0.0 \
 	  --port 8000
 	@echo "Mistral vLLM started on port 8000 (model loading takes ~20 min)"
@@ -147,7 +146,6 @@ deploy: build-app run-db
 	  --config-format mistral \
 	  --enable-auto-tool-choice \
 	  --tool-call-parser mistral \
-	  --allowed-local-media-path /root/video \
 	  --host 0.0.0.0 \
 	  --port 8000
 	@echo "Starting Whisper vLLM in pod..."
