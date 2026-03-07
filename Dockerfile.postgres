@@ -1,22 +1,12 @@
 # Custom PostgreSQL image with pre-initialized database and pgvector
 # This avoids the chown issue on PACE by initializing the database at build time
-FROM docker.io/library/postgres:16-alpine
+# Use ankane/pgvector which has pgvector pre-installed
+FROM docker.io/ankane/pgvector:v0.7.4
 
-# Install pgvector extension
-RUN apk add --no-cache \
-    build-base \
-    git \
-    postgresql-dev && \
-    git clone --branch v0.5.1 https://github.com/pgvector/pgvector.git /tmp/pgvector && \
-    cd /tmp/pgvector && \
-    make && \
-    make install && \
-    cd / && \
-    rm -rf /tmp/pgvector && \
-    apk del build-base git
-
-# Create a directory for pre-initialized data that doesn't require chown
-RUN mkdir -p /var/lib/postgresql/data-template
+# Custom PostgreSQL image with pre-initialized database and pgvector
+# This avoids the chown issue on PACE by initializing the database at build time
+# Use ankane/pgvector which has pgvector pre-installed
+FROM docker.io/ankane/pgvector:v0.7.4
 
 # Switch to postgres user for initialization
 USER postgres
@@ -30,8 +20,8 @@ RUN initdb -D /var/lib/postgresql/data-template && \
     echo "synchronous_commit = off" >> /var/lib/postgresql/data-template/postgresql.conf
 
 # Start PostgreSQL temporarily to create the database and enable pgvector
-RUN pg_ctl -D /var/lib/postgresql/data-template start && \
-    sleep 2 && \
+RUN pg_ctl -D /var/lib/postgresql/data-template -o "-c listen_addresses=''" start && \
+    sleep 3 && \
     psql -c "CREATE DATABASE vip_db;" && \
     psql -d vip_db -c "CREATE EXTENSION vector;" && \
     psql -d vip_db -c "CREATE TABLE lecture_videos ( \
