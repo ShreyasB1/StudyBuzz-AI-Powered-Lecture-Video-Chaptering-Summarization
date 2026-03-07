@@ -198,9 +198,8 @@ def list_db_videos():
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT video_hash, video_name, video_date 
+                    SELECT video_hash, video_name, video_date, done_processing 
                     FROM lecture_videos 
-                    WHERE done_processing = TRUE 
                     ORDER BY video_date DESC
                     """
                 )
@@ -211,6 +210,7 @@ def list_db_videos():
                 "video_hash": row[0],
                 "video_name": row[1],
                 "video_date": row[2].isoformat() if row[2] else None,
+                "done_processing": row[3],
             }
             for row in rows
         ]
