@@ -77,6 +77,7 @@ run-mistral:
 run-whisper:
 	@echo "Starting Whisper vLLM container..."
 	podman run -d \
+	  --restart unless-stopped \
 	  --device nvidia.com/gpu=all \
 	  --security-opt=label=disable \
 	  --ipc=host \
@@ -117,7 +118,7 @@ run-db:
 
 deploy: build-app run-db
 	@echo "Creating pod for shared networking..."
-	@podman pod exists studybuzz-pod || podman pod create --name studybuzz-pod -p $(APP_PORT):5000
+	@podman pod exists studybuzz-pod || podman pod create --name studybuzz-pod -p $(APP_PORT):5000 -p 8000:8000 -p 8001:8001
 	@echo "Starting Mistral vLLM in pod..."
 	@mkdir -p output/video uploads
 	@podman ps -a --filter "name=^$(MISTRAL_CONTAINER)$$" --format "{{.Names}}" | grep -q $(MISTRAL_CONTAINER) && podman rm -f $(MISTRAL_CONTAINER) || true
@@ -155,6 +156,7 @@ deploy: build-app run-db
 	podman run -d \
 	  --pod studybuzz-pod \
 	  --name $(WHISPER_CONTAINER) \
+	  --restart unless-stopped \
 	  --device nvidia.com/gpu=all \
 	  --security-opt=label=disable \
 	  --ipc=host \
@@ -195,6 +197,7 @@ update-whisper:
 	podman run -d \
 	  --pod studybuzz-pod \
 	  --name $(WHISPER_CONTAINER) \
+	  --restart unless-stopped \
 	  --device nvidia.com/gpu=all \
 	  --security-opt=label=disable \
 	  --ipc=host \
