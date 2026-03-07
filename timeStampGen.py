@@ -7,6 +7,7 @@ import re
 import base64
 import shutil
 import tempfile
+import hashlib
 from typing import Optional
 from urllib import request, error
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -344,10 +345,14 @@ def split_transcript_by_timestamps(
             if entry["start"] >= start_time and entry["start"] < end_time
         ]
 
-        # Create safe filename
+        # Create safe filename and chapter folder
         safe_title = _sanitize_title(timestamp["title"])
-        output_filename = f"chapter_{i+1:02d}_{safe_title}.vtt"
-        output_path = os.path.join(output_dir, output_filename)
+        chapter_folder_name = f"chapter_{i+1:02d}_{safe_title}"
+        chapter_folder_path = os.path.join(output_dir, chapter_folder_name)
+        os.makedirs(chapter_folder_path, exist_ok=True)
+
+        output_filename = "transcript.vtt"
+        output_path = os.path.join(chapter_folder_path, output_filename)
 
         # Write chapter transcript
         try:
@@ -633,8 +638,12 @@ def summarize_chapters_with_llm(
         chapter_idx = entry["index"]
         safe_title = entry["safe_title"]
         try:
-            transcript_filename = f"chapter_{chapter_idx:02d}_{safe_title}.vtt"
-            transcript_path = os.path.join(chapter_transcripts_dir, transcript_filename)
+            chapter_folder_name = f"chapter_{chapter_idx:02d}_{safe_title}"
+            chapter_folder_path = os.path.join(
+                chapter_transcripts_dir, chapter_folder_name
+            )
+            transcript_filename = "transcript.vtt"
+            transcript_path = os.path.join(chapter_folder_path, transcript_filename)
             if not os.path.exists(transcript_path):
                 print(
                     f"Warning: Transcript file missing for chapter {chapter_idx} ({entry['title']})."
@@ -736,6 +745,23 @@ def summarize_chapters_with_llm(
             if not summary_text:
                 print(f"Warning: Empty summary returned for chapter {chapter_idx}.")
                 return None
+
+            summary_json_path = os.path.join(chapter_folder_path, "summary.json")
+            try:
+                with open(summary_json_path, "w", encoding="utf-8") as f:
+                    json.dump({entry["title"]: summary_text}, f, indent=2)
+            except IOError as e:
+                print(f"Error writing chapter summary JSON: {e}")
+
+            # Copy frames physically into the chapter directory
+            frames_out_dir = os.path.join(chapter_folder_path, "frames")
+            os.makedirs(frames_out_dir, exist_ok=True)
+            for frame_info in chapter_frames:
+                dest_path = os.path.join(
+                    frames_out_dir, os.path.basename(frame_info["path"])
+                )
+                if not os.path.exists(dest_path):
+                    shutil.copy2(frame_info["path"], dest_path)
 
             return (chapter_idx, {entry["time"]: {entry["title"]: summary_text}})
         except Exception as e:
@@ -1019,17 +1045,39 @@ def main():
 
     # Helper to run the pipeline for one video file
     def process_video(video_path: str) -> None:
-        base_name = os.path.splitext(os.path.basename(video_path))[0]
-        out_audio = os.path.join(output_dir, f"{base_name}.mp3")
-        out_transcript = os.path.join(output_dir, f"{base_name}.mp3.vtt")
-        out_timestamps = os.path.join(output_dir, f"{base_name}_timestamps.txt")
-        chapter_dir = os.path.join(output_dir, f"{base_name}_chapters")
-        frames_dir = os.path.join(output_dir, f"{base_name}_frames")
-        summary_json_path = os.path.join(output_dir, f"{base_name}_summary.json")
+        print(f"\nComputing SHA-256 hash for {video_path}...")
+        sha256_hash = hashlib.sha256()
+        try:
+            with open(video_path, "rb") as f:
+                for byte_block in iter(lambda: f.read(4096), b""):
+                    sha256_hash.update(byte_block)
+            video_hash = sha256_hash.hexdigest()
+        except IOError as e:
+            print(f"Error reading video file to hash: {e}")
+            return
 
-        os.makedirs(output_dir, exist_ok=True)
+        video_out_dir = os.path.join(output_dir, video_hash)
+        os.makedirs(video_out_dir, exist_ok=True)
 
-        print(f"\nProcessing: {video_path}")
+        # Copy original video into the hash folder
+        original_ext = os.path.splitext(video_path)[1]
+        copied_video_path = os.path.join(video_out_dir, f"source_video{original_ext}")
+        if os.path.abspath(video_path) != os.path.abspath(
+            copied_video_path
+        ) and not os.path.exists(copied_video_path):
+            print(f"Copying source video to output directory...")
+            shutil.copy2(video_path, copied_video_path)
+
+        # Optional: We could point `video_path` to `copied_video_path` so subsequent tools use the local copy, but the original is fine.
+
+        out_audio = os.path.join(video_out_dir, "audio.mp3")
+        out_transcript = os.path.join(video_out_dir, "full_transcript.vtt")
+        out_timestamps = os.path.join(video_out_dir, "timestamps.txt")
+        chapter_dir = video_out_dir
+        frames_dir = os.path.join(video_out_dir, "all_frames_temp")
+        summary_json_path = os.path.join(video_out_dir, "chapters_summary.json")
+
+        print(f"Processing video into: {video_out_dir}")
 
         # Start extracting frames in the background
         with ThreadPoolExecutor(max_workers=2) as pipeline_executor:

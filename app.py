@@ -3,6 +3,7 @@ import sys
 import json
 import subprocess
 import uuid
+import hashlib
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask_cors import CORS
@@ -60,6 +61,14 @@ def _check_service(url):
             return "ready" if resp.status == 200 else "not ready"
     except Exception:
         return "not ready"
+
+
+def _hash_file(filepath):
+    sha256_hash = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        for byte_block in iter(lambda: f.read(4096), b""):
+            sha256_hash.update(byte_block)
+    return sha256_hash.hexdigest()
 
 
 def _process_video(job_id, video_path, video_basename):
@@ -125,9 +134,12 @@ def _process_video(job_id, video_path, video_basename):
             log_file.write(f"\n{'=' * 40}\n")
             log_file.write(f"Exit code: {process.returncode}\n")
 
-        transcript_path = OUTPUT_FOLDER / f"{base_name}.mp3.vtt"
-        timestamps_path = OUTPUT_FOLDER / f"{base_name}_timestamps.txt"
-        summary_path = OUTPUT_FOLDER / f"{base_name}_summary.json"
+        video_hash = _hash_file(video_path)
+        video_out_dir = OUTPUT_FOLDER / video_hash
+
+        transcript_path = video_out_dir / "full_transcript.vtt"
+        timestamps_path = video_out_dir / "timestamps.txt"
+        summary_path = video_out_dir / "chapters_summary.json"
 
         has_transcript = transcript_path.exists() and transcript_path.stat().st_size > 0
         has_timestamps = timestamps_path.exists() and timestamps_path.stat().st_size > 0
@@ -137,10 +149,11 @@ def _process_video(job_id, video_path, video_basename):
             jobs[job_id]["status"] = "completed"
             jobs[job_id]["progress"] = "Processing complete!"
             jobs[job_id]["files"] = {
-                "transcript": f"{base_name}.mp3.vtt",
-                "timestamps": f"{base_name}_timestamps.txt",
-                "summary": f"{base_name}_summary.json",
+                "transcript": f"{video_hash}/full_transcript.vtt",
+                "timestamps": f"{video_hash}/timestamps.txt",
+                "summary": f"{video_hash}/chapters_summary.json",
                 "video_basename": video_basename,
+                "video_hash": video_hash,
             }
         elif has_transcript:
             jobs[job_id]["status"] = "failed"
