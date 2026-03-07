@@ -129,7 +129,6 @@ deploy: build-app run-db
 	  --security-opt=label=disable \
 	  --ipc=host \
 	  -v $(HUGGINGFACE_CACHE_PATH):/root/.cache/huggingface \
-	  -v $(PWD)/output/video:/root/video \
 	  --env "HUGGING_FACE_HUB_TOKEN=$(HF_TOKEN)" \
 	  --env "NCCL_DEBUG=INFO" \
 	  --env "OMP_NUM_THREADS=16" \
