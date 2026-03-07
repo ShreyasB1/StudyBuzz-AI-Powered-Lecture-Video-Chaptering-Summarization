@@ -196,8 +196,28 @@ deploy: build-app run-db
 	    --swap-space 16 \
 	    --gpu-memory-utilization 0.075 \
 	    --trust-remote-code \
-	    --host 0.0.0.0 \
 	    --port 8001"
+	@echo "Starting Nemotron vLLM in pod..."
+	@podman ps -a --filter "name=^$(EMBED_CONTAINER)$$" --format "{{.Names}}" | grep -q $(EMBED_CONTAINER) && podman rm -f $(EMBED_CONTAINER) || true
+	podman run -d \
+	  --pod studybuzz-pod \
+	  --name $(EMBED_CONTAINER) \
+	  --device nvidia.com/gpu=all \
+	  --security-opt=label=disable \
+	  --ipc=host \
+	  -v $(HUGGINGFACE_CACHE_PATH):/root/.cache/huggingface \
+	  --env "HUGGING_FACE_HUB_TOKEN=$(HF_TOKEN)" \
+	  --env "CUDA_VISIBLE_DEVICES=4,5,6,7" \
+	  docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129 \
+	  --model nvidia/llama-embed-nemotron-8b \
+	  --served-model-name nemotron \
+	  --tensor-parallel-size 4 \
+	  --gpu-memory-utilization 0.07 \
+	  --max-model-len 32768 \
+	  --trust-remote-code \
+	  --dtype bfloat16 \
+	  --host 0.0.0.0 \
+	  --port 8002
 	@echo "Starting StudyBuzz app container..."
 	@podman ps -a --filter "name=^$(APP_CONTAINER)$$" --format "{{.Names}}" | grep -q $(APP_CONTAINER) && podman rm -f $(APP_CONTAINER) || true
 	podman run -d \
