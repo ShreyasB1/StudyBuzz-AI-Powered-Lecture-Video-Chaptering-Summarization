@@ -1025,6 +1025,15 @@ def generate_chapter_embeddings(
     """
     Generate and store vector embeddings for each chapter's combined text content.
     """
+    print(f"\n{'='*60}")
+    print(f"EMBEDDING GENERATION START")
+    print(f"  video_hash:             {video_hash}")
+    print(f"  summary_json_path:      {summary_json_path}")
+    print(f"  chapter_transcripts_dir: {chapter_transcripts_dir}")
+    print(f"  api_url:                {api_url}")
+    print(f"  model_name:             {model_name}")
+    print(f"{'='*60}")
+
     if not os.path.exists(summary_json_path):
         print(f"Error: Summaries file not found at '{summary_json_path}'")
         return False
@@ -1032,53 +1041,93 @@ def generate_chapter_embeddings(
     try:
         with open(summary_json_path, "r", encoding="utf-8") as f:
             summaries = json.load(f)
+        print(
+            f"Loaded summaries JSON: {len(summaries)} entries, type={type(summaries).__name__}"
+        )
     except Exception as e:
         print(f"Error loading summaries JSON: {e}")
         return False
 
+    # Log raw structure of first entry for debugging
+    if summaries:
+        print(f"  Raw first entry type: {type(summaries[0]).__name__}")
+        if isinstance(summaries[0], dict):
+            print(f"  Raw first entry keys: {list(summaries[0].keys())}")
+
     success = True
-    print(f"Generating embeddings for {len(summaries)} chapter(s)...")
+    print(f"\nGenerating embeddings for {len(summaries)} chapter(s)...")
 
     for idx, chapter in enumerate(summaries, 1):
+        print(f"\n--- Chapter {idx} ---")
+        print(f"  Raw chapter type: {type(chapter).__name__}")
+
         # The summary JSON uses nested format: {timestamp: {title: summary_text}}
         # Unpack it to get the actual title and summary.
         chapter_title = f"Chapter {idx}"
         summary_text = ""
         if isinstance(chapter, dict):
             for _timestamp, title_summary in chapter.items():
+                print(
+                    f"  Timestamp key: '{_timestamp}', value type: {type(title_summary).__name__}"
+                )
                 if isinstance(title_summary, dict):
                     for title, summary in title_summary.items():
                         chapter_title = title
                         summary_text = summary
+                        print(f"  Extracted title: '{chapter_title}'")
+                        print(f"  Summary length: {len(summary_text)} chars")
+                        print(f"  Summary preview: '{summary_text[:100]}...'")
                         break
+                else:
+                    print(
+                        f"  WARNING: title_summary is not a dict, it's {type(title_summary).__name__}: {str(title_summary)[:100]}"
+                    )
                 break
+        else:
+            print(f"  WARNING: chapter is not a dict, it's {type(chapter).__name__}")
 
         safe_title = _sanitize_title(chapter_title)
         chapter_folder_name = f"chapter_{idx:02d}_{safe_title}"
         chapter_folder_path = os.path.join(chapter_transcripts_dir, chapter_folder_name)
-
-        # We need the relative path for the database logic
         chapter_rel_path = f"{video_hash}/{chapter_folder_name}"
+
+        print(f"  safe_title:          '{safe_title}'")
+        print(f"  chapter_folder_name: '{chapter_folder_name}'")
+        print(f"  chapter_folder_path: '{chapter_folder_path}'")
+        print(f"  chapter_rel_path:    '{chapter_rel_path}'")
+        print(f"  Folder exists:       {os.path.exists(chapter_folder_path)}")
 
         transcript_path = os.path.join(chapter_folder_path, "transcript.vtt")
         transcript_text = ""
+
+        print(f"  transcript_path:     '{transcript_path}'")
+        print(f"  Transcript exists:   {os.path.exists(transcript_path)}")
 
         if os.path.exists(transcript_path):
             try:
                 with open(transcript_path, "r", encoding="utf-8") as f:
                     transcript_content = f.read()
+                print(f"  Transcript raw size: {len(transcript_content)} chars")
                 transcript_text = _extract_plain_text_from_vtt(
                     transcript_content
                 ).strip()
                 if not transcript_text:
                     transcript_text = transcript_content.strip()
+                print(f"  Transcript text size: {len(transcript_text)} chars")
             except IOError as e:
-                print(f"Warning: Could not read transcript for chapter {idx}: {e}")
+                print(f"  WARNING: Could not read transcript for chapter {idx}: {e}")
+        else:
+            print(
+                f"  WARNING: No transcript file found, embedding will lack transcript content"
+            )
 
         # Combine transcript and summary exclusively for this chapter
         combined_text = f"Chapter Title: {chapter_title}\n\nSummary:\n{summary_text}\n\nTranscript:\n{transcript_text}"
+        print(f"  Combined text size:  {len(combined_text)} chars")
+        print(f"  Combined text preview: '{combined_text[:150]}...'")
 
         try:
+            print(f"  Calling embedding API at {api_url}...")
             client = openai.OpenAI(
                 base_url=api_url.rsplit("/embeddings", 1)[0], api_key="empty"
             )
@@ -1086,8 +1135,14 @@ def generate_chapter_embeddings(
             response = client.embeddings.create(model=model_name, input=combined_text)
 
             embedding_vector = response.data[0].embedding
+            print(
+                f"  Embedding received: dim={len(embedding_vector)}, first 5 values={embedding_vector[:5]}"
+            )
 
             # Store to Postgres
+            print(
+                f"  Inserting into DB: video_hash={video_hash}, chapter_path={chapter_rel_path}"
+            )
             with psycopg.connect(db_conn_str, autocommit=True) as conn:
                 with conn.cursor() as cur:
                     cur.execute(
@@ -1104,11 +1159,19 @@ def generate_chapter_embeddings(
                             embedding_vector,
                         ),
                     )
-            print(f"  ✓ Saved '{model_name}' embedding for Chapter {idx}")
+            print(
+                f"  ✓ Saved '{model_name}' embedding for Chapter {idx}: '{chapter_title}'"
+            )
         except Exception as e:
             print(f"  ✗ Failed to generate/store embedding for chapter {idx}: {e}")
+            import traceback
+
+            traceback.print_exc()
             success = False
 
+    print(f"\n{'='*60}")
+    print(f"EMBEDDING GENERATION COMPLETE (success={success})")
+    print(f"{'='*60}\n")
     return success
 
 
