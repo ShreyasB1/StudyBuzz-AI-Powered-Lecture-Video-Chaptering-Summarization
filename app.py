@@ -12,23 +12,21 @@ import threading
 import urllib.request
 import urllib.error
 
-# Import database helpers (optional - only if DB is available)
+# Import database helpers (SQLite + sqlite-vec, runs in-process)
 try:
     import db_helper
-    # Test connection immediately to verify database is reachable
+    # Test connection - SQLite will create the DB file on first access
     try:
-        with db_helper.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1")
+        conn = db_helper.get_connection()
+        conn.execute("SELECT 1")
+        conn.close()
         DB_AVAILABLE = True
-        print("✓ Database connection successful")
+        print("✓ Database connection successful (SQLite)")
     except Exception as conn_err:
         print(f"⚠ Database connection failed: {conn_err}")
-        print("  App will run without database features")
         DB_AVAILABLE = False
 except Exception as e:
     print(f"⚠ Database module not available: {e}")
-    print("  App will run without database features")
     DB_AVAILABLE = False
 
 BASE_DIR = Path(__file__).parent.absolute()
@@ -327,16 +325,16 @@ def health_check():
         "whisper": _check_service("http://localhost:8001/health"),
         "database": "not available"
     }
-    
+
     if DB_AVAILABLE:
         try:
-            with db_helper.get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT 1")
+            conn = db_helper.get_connection()
+            conn.execute("SELECT 1")
+            conn.close()
             health_status["database"] = "connected"
         except Exception as e:
             health_status["database"] = f"error: {str(e)}"
-    
+
     return jsonify(health_status), 200
 
 

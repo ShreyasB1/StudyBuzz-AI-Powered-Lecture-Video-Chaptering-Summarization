@@ -73,54 +73,11 @@ echo "Pod created: ${POD_NAME}"
 # ---------------------------------------------------------------------------
 echo "TIMING - Starting PostgreSQL database at: $(date)"
 
-POSTGRES_DATA_DIR="/tmp/studybuzz-pgdata-${SLURM_JOB_ID}"
-echo "Copying pre-initialized PostgreSQL data to ${POSTGRES_DATA_DIR}..."
-cp -r "${APP_DIR}/postgres-data" "${POSTGRES_DATA_DIR}"
-chmod -R 700 "${POSTGRES_DATA_DIR}"
-
-# Run as UID 999 (postgres) using --user so postgres doesn't refuse root execution.
-# The data directory is on /tmp (local disk) so no NFS chown restriction applies.
-podman run -d \
-  --pod "${POD_NAME}" \
-  --name "postgres-db-${SLURM_JOB_ID}" \
-  --user 999:999 \
-  --entrypoint postgres \
-  -v "${POSTGRES_DATA_DIR}:/var/lib/postgresql/data" \
-  docker.io/ankane/pgvector:latest \
-  -D /var/lib/postgresql/data
-
-# Wait a bit for container to attempt startup
-sleep 5
-
-# Check if container is still running (it may crash immediately due to permissions)
-if podman ps --filter "name=postgres-db-${SLURM_JOB_ID}" --format "{{.Names}}" | grep -q "postgres-db"; then
-  echo "PostgreSQL container is running."
-  
-  # Wait for PostgreSQL to be ready
-  echo "Waiting for PostgreSQL to be ready..."
-  POSTGRES_READY=0
-  for i in {1..30}; do
-    if podman exec "postgres-db-${SLURM_JOB_ID}" pg_isready -U postgres > /dev/null 2>&1; then
-      echo "PostgreSQL is ready!"
-      POSTGRES_READY=1
-      break
-    fi
-    echo "  Waiting for PostgreSQL... ($i/30)"
-    sleep 2
-  done
-  
-  if [ $POSTGRES_READY -eq 0 ]; then
-    echo "WARNING: PostgreSQL did not become ready in time"
-    podman logs "postgres-db-${SLURM_JOB_ID}" 2>&1 | tail -20
-  fi
-else
-  echo "ERROR: PostgreSQL container failed to start!"
-  echo "Container logs:"
-  podman logs "postgres-db-${SLURM_JOB_ID}" 2>&1 || true
-  echo ""
-  echo "NOTE: Database features will not be available, but app will continue."
-  echo "Video processing will still work without database tracking."
-fi
+# ---------------------------------------------------------------------------
+# Database: SQLite with sqlite-vec runs inside the Flask container.
+# No separate database container needed - zero permission issues on PACE.
+# ---------------------------------------------------------------------------
+echo "Database: Using SQLite with sqlite-vec (runs inside Flask container)"
 
 # ---------------------------------------------------------------------------
 # Build the StudyBuzz app image
@@ -152,21 +109,6 @@ else
 fi
 
 echo "TIMING - StudyBuzz Flask app started at: $(date)"
-
-# ---------------------------------------------------------------------------
-# Check database schema (already initialized in custom image)
-# ---------------------------------------------------------------------------
-if podman ps --filter "name=postgres-db-${SLURM_JOB_ID}" --format "{{.Names}}" | grep -q "postgres-db"; then
-  echo "Verifying database schema..."
-  podman exec "studybuzz-app-${SLURM_JOB_ID}" python -c "import db_helper; db_helper.get_connection().close()"
-  if [ $? -eq 0 ]; then
-    echo "✓ Database schema verified"
-  else
-    echo "⚠ Database schema verification failed (may need manual initialization)"
-  fi
-else
-  echo "Skipping database verification (PostgreSQL not running)"
-fi
 
 echo "StudyBuzz web UI is now accessible on port ${STUDYBUZZ_PORT}"
 echo "Access via OnDemand: https://ondemand-ice.pace.gatech.edu/node/${HOSTNAME}/${STUDYBUZZ_PORT}/"
