@@ -1,12 +1,7 @@
 # Custom PostgreSQL image with pre-initialized database and pgvector
 # This avoids the chown issue on PACE by initializing the database at build time
 # Use ankane/pgvector which has pgvector pre-installed
-FROM docker.io/ankane/pgvector:v0.7.4
-
-# Custom PostgreSQL image with pre-initialized database and pgvector
-# This avoids the chown issue on PACE by initializing the database at build time
-# Use ankane/pgvector which has pgvector pre-installed
-FROM docker.io/ankane/pgvector:v0.7.4
+FROM docker.io/ankane/pgvector:latest
 
 # Switch to postgres user for initialization
 USER postgres
