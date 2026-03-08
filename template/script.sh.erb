@@ -76,12 +76,14 @@ echo "TIMING - Starting PostgreSQL database at: $(date)"
 POSTGRES_DATA_DIR="/tmp/studybuzz-pgdata-${SLURM_JOB_ID}"
 echo "Copying pre-initialized PostgreSQL data to ${POSTGRES_DATA_DIR}..."
 cp -r "${APP_DIR}/postgres-data" "${POSTGRES_DATA_DIR}"
+chmod -R 700 "${POSTGRES_DATA_DIR}"
 
-# Use --entrypoint to skip docker-entrypoint.sh (which does chown).
-# The data is already initialized, so we run postgres directly.
+# Run as UID 999 (postgres) using --user so postgres doesn't refuse root execution.
+# The data directory is on /tmp (local disk) so no NFS chown restriction applies.
 podman run -d \
   --pod "${POD_NAME}" \
   --name "postgres-db-${SLURM_JOB_ID}" \
+  --user 999:999 \
   --entrypoint postgres \
   -v "${POSTGRES_DATA_DIR}:/var/lib/postgresql/data" \
   docker.io/ankane/pgvector:latest \
