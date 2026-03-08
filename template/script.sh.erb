@@ -67,37 +67,21 @@ podman pod create \
 echo "Pod created: ${POD_NAME}"
 
 # ---------------------------------------------------------------------------
-# Build custom PostgreSQL image with pre-initialized database
-# This avoids chown issues on PACE by initializing at build time
-# ---------------------------------------------------------------------------
-echo "TIMING - Building PostgreSQL image at: $(date)"
-
-if [ -f "${APP_DIR}/Dockerfile.postgres" ]; then
-  cp "${APP_DIR}/Dockerfile.postgres" "${PWD}/"
-  podman build -f Dockerfile.postgres -t "studybuzz-postgres-${SLURM_JOB_ID}" .
-  
-  if [ $? -eq 0 ]; then
-    echo "PostgreSQL image built successfully"
-    POSTGRES_IMAGE="studybuzz-postgres-${SLURM_JOB_ID}"
-  else
-    echo "PostgreSQL image build failed, falling back to stock image"
-    POSTGRES_IMAGE="docker.io/library/postgres:16-alpine"
-  fi
-else
-  echo "Custom PostgreSQL Dockerfile not found, using stock image"
-  POSTGRES_IMAGE="docker.io/library/postgres:16-alpine"
-fi
-
-# ---------------------------------------------------------------------------
-# Start PostgreSQL database container (internal only, no GPU needed)
-# Pre-initialized database should avoid chown issues
+# Start PostgreSQL database container
+# Uses pre-initialized data directory from the repo (no chown/initdb needed)
 # ---------------------------------------------------------------------------
 echo "TIMING - Starting PostgreSQL database at: $(date)"
+
+# Copy the pre-initialized data directory to /tmp (local filesystem, no NFS restrictions)
+POSTGRES_DATA_DIR="/tmp/studybuzz-pgdata-${SLURM_JOB_ID}"
+echo "Copying pre-initialized PostgreSQL data to ${POSTGRES_DATA_DIR}..."
+cp -r "${APP_DIR}/postgres-data" "${POSTGRES_DATA_DIR}"
 
 podman run -d \
   --pod "${POD_NAME}" \
   --name "postgres-db-${SLURM_JOB_ID}" \
-  "${POSTGRES_IMAGE}"
+  -v "${POSTGRES_DATA_DIR}:/var/lib/postgresql/data" \
+  docker.io/ankane/pgvector:latest
 
 # Wait a bit for container to attempt startup
 sleep 5
