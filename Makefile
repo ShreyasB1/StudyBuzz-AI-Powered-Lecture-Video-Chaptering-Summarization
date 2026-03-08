@@ -151,6 +151,7 @@ run-db:
 deploy: build-app run-db
 	@echo "Creating pod for shared networking..."
 	@podman pod exists studybuzz-pod || podman pod create --name studybuzz-pod -p $(APP_PORT):5000 -p 8000:8000 -p 8001:8001 -p 8002:8002
+	@mkdir -p output/video uploads
 	@echo "Starting StudyBuzz app container..."
 	@podman ps -a --filter "name=^$(APP_CONTAINER)$$" --format "{{.Names}}" | grep -q $(APP_CONTAINER) && podman rm -f $(APP_CONTAINER) || true
 	podman run -d \
@@ -162,7 +163,6 @@ deploy: build-app run-db
 	  -v $(PWD)/output:/app/output:Z \
 	  $(APP_IMAGE)
 	@echo "Starting Mistral vLLM in pod..."
-	@mkdir -p output/video uploads
 	@podman ps -a --filter "name=^$(MISTRAL_CONTAINER)$$" --format "{{.Names}}" | grep -q $(MISTRAL_CONTAINER) && podman rm -f $(MISTRAL_CONTAINER) || true
 	podman run -d \
 	  --pod studybuzz-pod \
