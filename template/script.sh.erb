@@ -183,7 +183,7 @@ if [ -n "${HUGGINGFACE_CACHE_PATH}" ] && [ -d "${HUGGINGFACE_CACHE_PATH}" ]; the
     --model mistralai/Mistral-Large-3-675B-Instruct-2512 \
     --served-model-name mistral-large \
     --tensor-parallel-size "${TENSOR_PARALLEL}" \
-    --gpu-memory-utilization 0.90 \
+    --gpu-memory-utilization 0.85 \
     --max-model-len 98304 \
     --limit-mm-per-prompt '{"image": 32}' \
     --max-num-batched-tokens 8192 \

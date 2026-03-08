@@ -62,7 +62,7 @@ run-mistral:
 	  --model mistralai/Mistral-Large-3-675B-Instruct-2512 \
 	  --served-model-name mistral-large \
 	  --tensor-parallel-size $(NUM_GPUS) \
-	  --gpu-memory-utilization 0.90 \
+	  --gpu-memory-utilization 0.85 \
 	  --max-model-len 98304 \
 	  --limit-mm-per-prompt '{"image": 32}' \
 	  --max-num-batched-tokens 8192 \
@@ -179,7 +179,7 @@ deploy: build-app run-db
 	  --model mistralai/Mistral-Large-3-675B-Instruct-2512 \
 	  --served-model-name mistral-large \
 	  --tensor-parallel-size $(NUM_GPUS) \
-	  --gpu-memory-utilization 0.90 \
+	  --gpu-memory-utilization 0.85 \
 	  --max-model-len 98304 \
 	  --limit-mm-per-prompt '{"image": 32}' \
 	  --max-num-batched-tokens 8192 \
