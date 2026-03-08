@@ -150,6 +150,16 @@ run-db:
 deploy: build-app run-db
 	@echo "Creating pod for shared networking..."
 	@podman pod exists studybuzz-pod || podman pod create --name studybuzz-pod -p $(APP_PORT):5000 -p 8000:8000 -p 8001:8001 -p 8002:8002
+	@echo "Starting StudyBuzz app container..."
+	@podman ps -a --filter "name=^$(APP_CONTAINER)$$" --format "{{.Names}}" | grep -q $(APP_CONTAINER) && podman rm -f $(APP_CONTAINER) || true
+	podman run -d \
+	  --pod studybuzz-pod \
+	  --restart unless-stopped \
+	  --name $(APP_CONTAINER) \
+	  -e VIP_DB_HOST=host.containers.internal \
+	  -v $(PWD)/uploads:/app/uploads:Z \
+	  -v $(PWD)/output:/app/output:Z \
+	  $(APP_IMAGE)
 	@echo "Starting Mistral vLLM in pod..."
 	@mkdir -p output/video uploads
 	@podman ps -a --filter "name=^$(MISTRAL_CONTAINER)$$" --format "{{.Names}}" | grep -q $(MISTRAL_CONTAINER) && podman rm -f $(MISTRAL_CONTAINER) || true
@@ -232,17 +242,7 @@ deploy: build-app run-db
 	  --disable-custom-all-reduce \
 	  --host 0.0.0.0 \
 	  --port 8002
-	@echo "Starting StudyBuzz app container..."
-	@podman ps -a --filter "name=^$(APP_CONTAINER)$$" --format "{{.Names}}" | grep -q $(APP_CONTAINER) && podman rm -f $(APP_CONTAINER) || true
-	podman run -d \
-	  --pod studybuzz-pod \
-	  --restart unless-stopped \
-	  --name $(APP_CONTAINER) \
-	  -e VIP_DB_HOST=host.containers.internal \
-	  -v $(PWD)/uploads:/app/uploads:Z \
-	  -v $(PWD)/output:/app/output:Z \
-	  $(APP_IMAGE)
-	@echo ""
+
 	@echo "Deployment complete!"
 	@echo "StudyBuzz:  http://localhost:$(APP_PORT)"
 	@echo "Mistral:   http://localhost:8000"
