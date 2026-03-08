@@ -83,17 +83,6 @@ def init_schema():
             )
             print("Ensured table chapter_embeddings exists")
 
-            # Optional ANN index
-            cur.execute(
-                """
-                CREATE INDEX IF NOT EXISTS chapter_embeddings_embedding_idx
-                    ON chapter_embeddings
-                    USING ivfflat (embedding vector_cosine_ops)
-                    WITH (lists = 100);
-                """
-            )
-            print("Ensured ANN index on chapter_embeddings.embedding exists")
-
 
 def insert_dummy_data():
     """Placeholder for inserting dummy data."""
