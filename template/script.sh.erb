@@ -294,7 +294,7 @@ if [ -n "${HUGGINGFACE_CACHE_PATH}" ] && [ -d "${HUGGINGFACE_CACHE_PATH}" ]; the
     --ipc=host \
     -v "${HUGGINGFACE_CACHE_PATH}:/root/.cache/huggingface" \
     "${HF_TOKEN_ARGS[@]}" \
-    --env "CUDA_VISIBLE_DEVICES=4,5,6,7" \
+    --env "CUDA_VISIBLE_DEVICES=1,2,3,4" \
     --env "VLLM_USE_V1=0" \
     docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129 \
     --model nvidia/llama-embed-nemotron-8b \
@@ -304,6 +304,7 @@ if [ -n "${HUGGINGFACE_CACHE_PATH}" ] && [ -d "${HUGGINGFACE_CACHE_PATH}" ]; the
     --max-model-len 32768 \
     --trust-remote-code \
     --dtype bfloat16 \
+    --enforce-eager \
     --disable-custom-all-reduce \
     --host 0.0.0.0 \
     --port 8002

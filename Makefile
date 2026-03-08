@@ -126,6 +126,7 @@ run-embedder:
 	  --max-model-len 32768 \
 	  --trust-remote-code \
 	  --dtype bfloat16 \
+	  --enforce-eager \
 	  --disable-custom-all-reduce \
 	  --host 0.0.0.0 \
 	  --port 8002
@@ -229,7 +230,7 @@ deploy: build-app run-db
 	  --ipc=host \
 	  -v $(HUGGINGFACE_CACHE_PATH):/root/.cache/huggingface \
 	  --env "HUGGING_FACE_HUB_TOKEN=$(HF_TOKEN)" \
-	  --env "CUDA_VISIBLE_DEVICES=4,5,6,7" \
+	  --env "CUDA_VISIBLE_DEVICES=1,2,3,4" \
 	  --env "VLLM_USE_V1=0" \
 	  docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129 \
 	  --model nvidia/llama-embed-nemotron-8b \
@@ -239,6 +240,7 @@ deploy: build-app run-db
 	  --max-model-len 32768 \
 	  --trust-remote-code \
 	  --dtype bfloat16 \
+	  --enforce-eager \
 	  --disable-custom-all-reduce \
 	  --host 0.0.0.0 \
 	  --port 8002
