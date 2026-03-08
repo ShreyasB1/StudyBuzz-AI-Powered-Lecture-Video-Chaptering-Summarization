@@ -1040,7 +1040,20 @@ def generate_chapter_embeddings(
     print(f"Generating embeddings for {len(summaries)} chapter(s)...")
 
     for idx, chapter in enumerate(summaries, 1):
-        safe_title = _sanitize_title(chapter.get("title", f"Chapter {idx}"))
+        # The summary JSON uses nested format: {timestamp: {title: summary_text}}
+        # Unpack it to get the actual title and summary.
+        chapter_title = f"Chapter {idx}"
+        summary_text = ""
+        if isinstance(chapter, dict):
+            for _timestamp, title_summary in chapter.items():
+                if isinstance(title_summary, dict):
+                    for title, summary in title_summary.items():
+                        chapter_title = title
+                        summary_text = summary
+                        break
+                break
+
+        safe_title = _sanitize_title(chapter_title)
         chapter_folder_name = f"chapter_{idx:02d}_{safe_title}"
         chapter_folder_path = os.path.join(chapter_transcripts_dir, chapter_folder_name)
 
@@ -1062,10 +1075,8 @@ def generate_chapter_embeddings(
             except IOError as e:
                 print(f"Warning: Could not read transcript for chapter {idx}: {e}")
 
-        summary_text = chapter.get("summary", "")
-
         # Combine transcript and summary exclusively for this chapter
-        combined_text = f"Chapter Title: {chapter.get('title')}\n\nSummary:\n{summary_text}\n\nTranscript:\n{transcript_text}"
+        combined_text = f"Chapter Title: {chapter_title}\n\nSummary:\n{summary_text}\n\nTranscript:\n{transcript_text}"
 
         try:
             client = openai.OpenAI(
