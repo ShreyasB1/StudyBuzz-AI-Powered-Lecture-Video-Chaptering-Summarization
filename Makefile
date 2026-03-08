@@ -34,6 +34,7 @@ run-app: build-app
 	@echo "Starting StudyBuzz container..."
 	@mkdir -p uploads output/video
 	podman run -d \
+	  --restart unless-stopped \
 	  -p $(APP_PORT):5000 \
 	  -e VIP_DB_HOST=host.containers.internal \
 	  -v $(PWD)/uploads:/app/uploads:Z \
@@ -46,6 +47,7 @@ run-mistral:
 	@echo "Starting Mistral vLLM container..."
 	@mkdir -p output/video
 	podman run -d \
+	  --restart unless-stopped \
 	  --device nvidia.com/gpu=all \
 	  --security-opt=label=disable \
 	  --ipc=host \
@@ -106,12 +108,14 @@ run-embedder:
 	@echo "Starting Nemotron vLLM embedder container..."
 	podman run -d \
 	  --pod studybuzz-pod \
+	  --restart unless-stopped \
 	  --device nvidia.com/gpu=all \
 	  --security-opt=label=disable \
 	  --ipc=host \
 	  -v $(HUGGINGFACE_CACHE_PATH):/root/.cache/huggingface \
 	  --env "HUGGING_FACE_HUB_TOKEN=$(HF_TOKEN)" \
 	  --env "CUDA_VISIBLE_DEVICES=4,5,6,7" \
+	  --env "VLLM_USE_V1=0" \
 	  --name $(EMBED_CONTAINER) \
 	  docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129 \
 	  --model nvidia/llama-embed-nemotron-8b \
@@ -130,6 +134,7 @@ run-db:
 	@mkdir -p $(PWD)/my_pgdata
 	@podman ps -a --filter "name=^$(DB_CONTAINER)$$" --format "{{.Names}}" | grep -q $(DB_CONTAINER) && podman rm -f $(DB_CONTAINER) || true
 	podman run -d \
+	  --restart unless-stopped \
 	  --name $(DB_CONTAINER) \
 	  --userns=keep-id \
 	  --net=host \
@@ -148,6 +153,7 @@ deploy: build-app run-db
 	@podman ps -a --filter "name=^$(MISTRAL_CONTAINER)$$" --format "{{.Names}}" | grep -q $(MISTRAL_CONTAINER) && podman rm -f $(MISTRAL_CONTAINER) || true
 	podman run -d \
 	  --pod studybuzz-pod \
+	  --restart unless-stopped \
 	  --name $(MISTRAL_CONTAINER) \
 	  --device nvidia.com/gpu=all \
 	  --security-opt=label=disable \
@@ -201,6 +207,7 @@ deploy: build-app run-db
 	@podman ps -a --filter "name=^$(EMBED_CONTAINER)$$" --format "{{.Names}}" | grep -q $(EMBED_CONTAINER) && podman rm -f $(EMBED_CONTAINER) || true
 	podman run -d \
 	  --pod studybuzz-pod \
+	  --restart unless-stopped \
 	  --name $(EMBED_CONTAINER) \
 	  --device nvidia.com/gpu=all \
 	  --security-opt=label=disable \
@@ -208,6 +215,7 @@ deploy: build-app run-db
 	  -v $(HUGGINGFACE_CACHE_PATH):/root/.cache/huggingface \
 	  --env "HUGGING_FACE_HUB_TOKEN=$(HF_TOKEN)" \
 	  --env "CUDA_VISIBLE_DEVICES=4,5,6,7" \
+	  --env "VLLM_USE_V1=0" \
 	  docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129 \
 	  --model nvidia/llama-embed-nemotron-8b \
 	  --served-model-name nemotron \
@@ -222,6 +230,7 @@ deploy: build-app run-db
 	@podman ps -a --filter "name=^$(APP_CONTAINER)$$" --format "{{.Names}}" | grep -q $(APP_CONTAINER) && podman rm -f $(APP_CONTAINER) || true
 	podman run -d \
 	  --pod studybuzz-pod \
+	  --restart unless-stopped \
 	  --name $(APP_CONTAINER) \
 	  -e VIP_DB_HOST=host.containers.internal \
 	  -v $(PWD)/uploads:/app/uploads:Z \
@@ -266,6 +275,7 @@ update-app: build-app
 	@podman ps -a --filter "name=^$(APP_CONTAINER)$$" --format "{{.Names}}" | grep -q $(APP_CONTAINER) && podman rm -f $(APP_CONTAINER) || true
 	podman run -d \
 	  --pod studybuzz-pod \
+	  --restart unless-stopped \
 	  --name $(APP_CONTAINER) \
 	  -e VIP_DB_HOST=host.containers.internal \
 	  -v $(PWD)/uploads:/app/uploads:Z \

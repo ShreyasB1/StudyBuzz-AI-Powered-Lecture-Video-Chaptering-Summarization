@@ -87,6 +87,7 @@ echo "TIMING - Starting PostgreSQL database at: $(date)"
 mkdir -p "${PWD}/my_pgdata"
 podman run -d \
   --name "pgvector_local-${SLURM_JOB_ID}" \
+  --restart unless-stopped \
   --userns=keep-id \
   --net=host \
   -e POSTGRES_PASSWORD=mysecret \
@@ -105,6 +106,7 @@ echo "TIMING - Starting StudyBuzz container at: $(date)"
 podman run -d \
   --pod "${POD_NAME}" \
   --name "studybuzz-app-${SLURM_JOB_ID}" \
+  --restart unless-stopped \
   -e VIP_DB_HOST=host.containers.internal \
   -v "${UPLOADS_DIR}:/app/uploads:Z" \
   -v "${OUTPUT_DIR}:/app/output:Z" \
@@ -168,6 +170,7 @@ if [ -n "${HUGGINGFACE_CACHE_PATH}" ] && [ -d "${HUGGINGFACE_CACHE_PATH}" ]; the
   podman run -d \
     --pod "${POD_NAME}" \
     --name "mistral-vllm-${SLURM_JOB_ID}" \
+    --restart unless-stopped \
     --device nvidia.com/gpu=all \
     --security-opt=label=disable \
     --ipc=host \
@@ -285,12 +288,14 @@ if [ -n "${HUGGINGFACE_CACHE_PATH}" ] && [ -d "${HUGGINGFACE_CACHE_PATH}" ]; the
   podman run -d \
     --pod "${POD_NAME}" \
     --name "nemotron-vllm-${SLURM_JOB_ID}" \
+    --restart unless-stopped \
     --device nvidia.com/gpu=all \
     --security-opt=label=disable \
     --ipc=host \
     -v "${HUGGINGFACE_CACHE_PATH}:/root/.cache/huggingface" \
     "${HF_TOKEN_ARGS[@]}" \
     --env "CUDA_VISIBLE_DEVICES=4,5,6,7" \
+    --env "VLLM_USE_V1=0" \
     docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129 \
     --model nvidia/llama-embed-nemotron-8b \
     --served-model-name nemotron \
