@@ -69,19 +69,23 @@ echo "Pod created: ${POD_NAME}"
 # ---------------------------------------------------------------------------
 # Start PostgreSQL database container
 # Uses pre-initialized data directory from the repo (no chown/initdb needed)
+# Copies to /tmp first (local disk, not NFS) to avoid PACE chown restrictions
 # ---------------------------------------------------------------------------
 echo "TIMING - Starting PostgreSQL database at: $(date)"
 
-# Copy the pre-initialized data directory to /tmp (local filesystem, no NFS restrictions)
 POSTGRES_DATA_DIR="/tmp/studybuzz-pgdata-${SLURM_JOB_ID}"
 echo "Copying pre-initialized PostgreSQL data to ${POSTGRES_DATA_DIR}..."
 cp -r "${APP_DIR}/postgres-data" "${POSTGRES_DATA_DIR}"
 
+# Use --entrypoint to skip docker-entrypoint.sh (which does chown).
+# The data is already initialized, so we run postgres directly.
 podman run -d \
   --pod "${POD_NAME}" \
   --name "postgres-db-${SLURM_JOB_ID}" \
+  --entrypoint postgres \
   -v "${POSTGRES_DATA_DIR}:/var/lib/postgresql/data" \
-  docker.io/ankane/pgvector:latest
+  docker.io/ankane/pgvector:latest \
+  -D /var/lib/postgresql/data
 
 # Wait a bit for container to attempt startup
 sleep 5
