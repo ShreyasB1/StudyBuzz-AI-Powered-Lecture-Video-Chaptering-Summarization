@@ -63,7 +63,7 @@ run-mistral:
 	  --served-model-name mistral-large \
 	  --tensor-parallel-size $(NUM_GPUS) \
 	  --gpu-memory-utilization 0.90 \
-	  --max-model-len 196608 \
+	  --max-model-len 98304 \
 	  --limit-mm-per-prompt '{"image": 32}' \
 	  --max-num-batched-tokens 8192 \
 	  --enable-chunked-prefill \
@@ -180,7 +180,7 @@ deploy: build-app run-db
 	  --served-model-name mistral-large \
 	  --tensor-parallel-size $(NUM_GPUS) \
 	  --gpu-memory-utilization 0.90 \
-	  --max-model-len 196608 \
+	  --max-model-len 98304 \
 	  --limit-mm-per-prompt '{"image": 32}' \
 	  --max-num-batched-tokens 8192 \
 	  --enable-chunked-prefill \
