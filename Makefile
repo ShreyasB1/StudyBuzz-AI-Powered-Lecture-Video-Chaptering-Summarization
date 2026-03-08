@@ -182,7 +182,9 @@ deploy: build-app run-db
 	  --disable-custom-all-reduce \
 	  --host 0.0.0.0 \
 	  --port 8000
-	@echo "Starting Whisper vLLM in pod..."
+	@echo "Waiting for Mistral to be fully healthy before booting remaining models..."
+	@while ! curl -s "http://localhost:8000/health" > /dev/null; do sleep 15; done
+	@echo "Mistral is ready. Starting Whisper vLLM in pod..."
 	@podman ps -a --filter "name=^$(WHISPER_CONTAINER)$$" --format "{{.Names}}" | grep -q $(WHISPER_CONTAINER) && podman rm -f $(WHISPER_CONTAINER) || true
 	podman run -d \
 	  --pod studybuzz-pod \
