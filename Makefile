@@ -73,6 +73,7 @@ run-mistral:
 	  --config-format mistral \
 	  --enable-auto-tool-choice \
 	  --tool-call-parser mistral \
+	  --disable-custom-all-reduce \
 	  --host 0.0.0.0 \
 	  --port 8000
 	@echo "Mistral vLLM started on port 8000 (model loading takes ~20 min)"
@@ -125,6 +126,7 @@ run-embedder:
 	  --max-model-len 32768 \
 	  --trust-remote-code \
 	  --dtype bfloat16 \
+	  --disable-custom-all-reduce \
 	  --host 0.0.0.0 \
 	  --port 8002
 	@echo "Nemotron vLLM embedder started on port 8002"
@@ -177,11 +179,10 @@ deploy: build-app run-db
 	  --config-format mistral \
 	  --enable-auto-tool-choice \
 	  --tool-call-parser mistral \
+	  --disable-custom-all-reduce \
 	  --host 0.0.0.0 \
 	  --port 8000
-	@echo "Waiting for Mistral to be fully healthy before booting remaining models..."
-	@while ! curl -s "http://localhost:8000/health" > /dev/null; do sleep 15; done
-	@echo "Mistral is ready. Starting Whisper vLLM in pod..."
+	@echo "Starting Whisper vLLM in pod..."
 	@podman ps -a --filter "name=^$(WHISPER_CONTAINER)$$" --format "{{.Names}}" | grep -q $(WHISPER_CONTAINER) && podman rm -f $(WHISPER_CONTAINER) || true
 	podman run -d \
 	  --pod studybuzz-pod \
@@ -226,6 +227,7 @@ deploy: build-app run-db
 	  --max-model-len 32768 \
 	  --trust-remote-code \
 	  --dtype bfloat16 \
+	  --disable-custom-all-reduce \
 	  --host 0.0.0.0 \
 	  --port 8002
 	@echo "Starting StudyBuzz app container..."
