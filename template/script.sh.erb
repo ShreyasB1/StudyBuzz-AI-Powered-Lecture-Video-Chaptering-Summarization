@@ -62,7 +62,10 @@ POD_NAME="studybuzz-pod-${SLURM_JOB_ID}"
 
 podman pod create \
   --name "${POD_NAME}" \
-  -p "${STUDYBUZZ_PORT}:5000"
+  -p "${STUDYBUZZ_PORT}:5000" \
+  -p 8000:8000 \
+  -p 8001:8001 \
+  -p 8002:8002
 
 echo "Pod created: ${POD_NAME}"
 
@@ -77,6 +80,25 @@ podman build \
 echo "TIMING - StudyBuzz image built at: $(date)"
 
 # ---------------------------------------------------------------------------
+# Start PostgreSQL pgvector database (port 5432, host network)
+# ---------------------------------------------------------------------------
+echo "TIMING - Starting PostgreSQL database at: $(date)"
+
+mkdir -p "${PWD}/my_pgdata"
+podman run -d \
+  --name "pgvector_local-${SLURM_JOB_ID}" \
+  --restart unless-stopped \
+  --userns=keep-id \
+  --net=host \
+  -e POSTGRES_PASSWORD=mysecret \
+  -e PGDATA=/var/lib/postgresql/data/pgdata \
+  -e PGPORT=5432 \
+  -v "${PWD}/my_pgdata:/var/lib/postgresql/data:Z" \
+  pgvector/pgvector:pg18-trixie
+
+echo "Database container started."
+
+# ---------------------------------------------------------------------------
 # Start the StudyBuzz Flask container (no GPU needed)
 # ---------------------------------------------------------------------------
 echo "TIMING - Starting StudyBuzz container at: $(date)"
@@ -84,6 +106,8 @@ echo "TIMING - Starting StudyBuzz container at: $(date)"
 podman run -d \
   --pod "${POD_NAME}" \
   --name "studybuzz-app-${SLURM_JOB_ID}" \
+  --restart unless-stopped \
+  -e VIP_DB_HOST=host.containers.internal \
   -v "${UPLOADS_DIR}:/app/uploads:Z" \
   -v "${OUTPUT_DIR}:/app/output:Z" \
   "studybuzz-app-${SLURM_JOB_ID}"
@@ -146,6 +170,7 @@ if [ -n "${HUGGINGFACE_CACHE_PATH}" ] && [ -d "${HUGGINGFACE_CACHE_PATH}" ]; the
   podman run -d \
     --pod "${POD_NAME}" \
     --name "mistral-vllm-${SLURM_JOB_ID}" \
+    --restart unless-stopped \
     --device nvidia.com/gpu=all \
     --security-opt=label=disable \
     --ipc=host \
@@ -158,8 +183,8 @@ if [ -n "${HUGGINGFACE_CACHE_PATH}" ] && [ -d "${HUGGINGFACE_CACHE_PATH}" ]; the
     --model mistralai/Mistral-Large-3-675B-Instruct-2512 \
     --served-model-name mistral-large \
     --tensor-parallel-size "${TENSOR_PARALLEL}" \
-    --gpu-memory-utilization 0.90 \
-    --max-model-len 196608 \
+    --gpu-memory-utilization 0.85 \
+    --max-model-len 98304 \
     --limit-mm-per-prompt '{"image": 32}' \
     --max-num-batched-tokens 8192 \
     --enable-chunked-prefill \
@@ -170,6 +195,7 @@ if [ -n "${HUGGINGFACE_CACHE_PATH}" ] && [ -d "${HUGGINGFACE_CACHE_PATH}" ]; the
     --enable-auto-tool-choice \
     --tool-call-parser mistral \
     --allowed-local-media-path /root/video \
+    --disable-custom-all-reduce \
     --host 0.0.0.0 \
     --port 8000
 
@@ -183,23 +209,22 @@ if [ -n "${HUGGINGFACE_CACHE_PATH}" ] && [ -d "${HUGGINGFACE_CACHE_PATH}" ]; the
   # Monitor Mistral readiness in the background.
   # Health checks run inside the Flask container (same pod network namespace)
   # because ports 8000/8001 are not published to the host.
-  (
-    MISTRAL_ELAPSED=0
-    MISTRAL_INTERVAL=30
-    MISTRAL_TIMEOUT=2400
-    while [ ${MISTRAL_ELAPSED} -lt ${MISTRAL_TIMEOUT} ]; do
-      if podman exec "studybuzz-app-${SLURM_JOB_ID}" python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)" > /dev/null 2>&1; then
-        echo "TIMING - Mistral model fully loaded and ready at: $(date) (after ${MISTRAL_ELAPSED}s)"
-        break
-      fi
-      sleep ${MISTRAL_INTERVAL}
-      MISTRAL_ELAPSED=$((MISTRAL_ELAPSED + MISTRAL_INTERVAL))
-      echo "  Mistral still loading model... (${MISTRAL_ELAPSED}s elapsed)"
-    done
-    if [ ${MISTRAL_ELAPSED} -ge ${MISTRAL_TIMEOUT} ]; then
-      echo "WARNING: Mistral health check timed out after ${MISTRAL_TIMEOUT}s. Check podman logs mistral-vllm-${SLURM_JOB_ID}"
+  echo "Waiting for Mistral to be fully healthy before booting remaining models..."
+  MISTRAL_ELAPSED=0
+  MISTRAL_INTERVAL=30
+  MISTRAL_TIMEOUT=2400
+  while [ ${MISTRAL_ELAPSED} -lt ${MISTRAL_TIMEOUT} ]; do
+    if podman exec "studybuzz-app-${SLURM_JOB_ID}" python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)" > /dev/null 2>&1; then
+      echo "TIMING - Mistral model fully loaded and ready at: $(date) (after ${MISTRAL_ELAPSED}s)"
+      break
     fi
-  ) &
+    sleep ${MISTRAL_INTERVAL}
+    MISTRAL_ELAPSED=$((MISTRAL_ELAPSED + MISTRAL_INTERVAL))
+    echo "  Mistral still loading model... (${MISTRAL_ELAPSED}s elapsed)"
+  done
+  if [ ${MISTRAL_ELAPSED} -ge ${MISTRAL_TIMEOUT} ]; then
+    echo "WARNING: Mistral health check timed out after ${MISTRAL_TIMEOUT}s. Check podman logs mistral-vllm-${SLURM_JOB_ID}"
+  fi
 
   # -------------------------------------------------------------------------
   # Start Whisper vLLM container (port 8001, shares GPUs, ~9% VRAM)
@@ -216,7 +241,7 @@ if [ -n "${HUGGINGFACE_CACHE_PATH}" ] && [ -d "${HUGGINGFACE_CACHE_PATH}" ]; the
     "${HF_TOKEN_ARGS[@]}" \
     --env "VLLM_USE_DEEP_GEMM=0" \
     --entrypoint /bin/bash \
-    docker.io/vllm/vllm-openai:v0.14.0 \
+    docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129 \
     -c "pip install librosa soundfile && python3 -m vllm.entrypoints.openai.api_server \
       --model openai/whisper-large-v3 \
       --served-model-name whisper \
@@ -224,7 +249,7 @@ if [ -n "${HUGGINGFACE_CACHE_PATH}" ] && [ -d "${HUGGINGFACE_CACHE_PATH}" ]; the
       --max-model-len 448 \
       --tensor-parallel-size 1 \
       --swap-space 16 \
-      --gpu-memory-utilization 0.09 \
+      --gpu-memory-utilization 0.075 \
       --trust-remote-code \
       --host 0.0.0.0 \
       --port 8001"
@@ -252,6 +277,61 @@ if [ -n "${HUGGINGFACE_CACHE_PATH}" ] && [ -d "${HUGGINGFACE_CACHE_PATH}" ]; the
     done
     if [ ${WHISPER_ELAPSED} -ge ${WHISPER_TIMEOUT} ]; then
       echo "WARNING: Whisper health check timed out after ${WHISPER_TIMEOUT}s. Check podman logs whisper-vllm-${SLURM_JOB_ID}"
+    fi
+  ) &
+
+  # -------------------------------------------------------------------------
+  # Start Nemotron vLLM embedder container (port 8002, 4 GPUs shares)
+  # -------------------------------------------------------------------------
+  echo "TIMING - Starting Nemotron vLLM server at: $(date)"
+
+  podman run -d \
+    --pod "${POD_NAME}" \
+    --name "nemotron-vllm-${SLURM_JOB_ID}" \
+    --restart unless-stopped \
+    --device nvidia.com/gpu=all \
+    --security-opt=label=disable \
+    --ipc=host \
+    -v "${HUGGINGFACE_CACHE_PATH}:/root/.cache/huggingface" \
+    "${HF_TOKEN_ARGS[@]}" \
+    --env "CUDA_VISIBLE_DEVICES=1,2,3,4" \
+    --env "VLLM_USE_V1=0" \
+    docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129 \
+    --model nvidia/llama-embed-nemotron-8b \
+    --served-model-name nemotron \
+    --tensor-parallel-size 4 \
+    --gpu-memory-utilization 0.07 \
+    --max-model-len 32768 \
+    --trust-remote-code \
+    --dtype bfloat16 \
+    --enforce-eager \
+    --disable-custom-all-reduce \
+    --host 0.0.0.0 \
+    --port 8002
+
+  if podman ps --filter "name=nemotron-vllm-${SLURM_JOB_ID}" --format "{{.Names}}" | grep -q "nemotron-vllm"; then
+    echo "Nemotron vLLM container is running. Model loading takes ~2 minutes."
+  else
+    echo "ERROR: Nemotron vLLM container failed to start!"
+    podman logs "nemotron-vllm-${SLURM_JOB_ID}" 2>&1 || true
+  fi
+
+  # Monitor Nemotron readiness in the background
+  (
+    NEMO_ELAPSED=0
+    NEMO_INTERVAL=15
+    NEMO_TIMEOUT=600
+    while [ ${NEMO_ELAPSED} -lt ${NEMO_TIMEOUT} ]; do
+      if podman exec "studybuzz-app-${SLURM_JOB_ID}" python -c "import urllib.request; urllib.request.urlopen('http://localhost:8002/health', timeout=5)" > /dev/null 2>&1; then
+        echo "TIMING - Nemotron model fully loaded and ready at: $(date) (after ${NEMO_ELAPSED}s)"
+        break
+      fi
+      sleep ${NEMO_INTERVAL}
+      NEMO_ELAPSED=$((NEMO_ELAPSED + NEMO_INTERVAL))
+      echo "  Nemotron still loading... (${NEMO_ELAPSED}s elapsed)"
+    done
+    if [ ${NEMO_ELAPSED} -ge ${NEMO_TIMEOUT} ]; then
+      echo "WARNING: Nemotron health check timed out after ${NEMO_TIMEOUT}s. Check podman logs nemotron-vllm-${SLURM_JOB_ID}"
     fi
   ) &
 

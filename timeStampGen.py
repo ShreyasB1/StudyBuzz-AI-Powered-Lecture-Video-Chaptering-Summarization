@@ -7,9 +7,13 @@ import re
 import base64
 import shutil
 import tempfile
+import hashlib
 from typing import Optional
 from urllib import request, error
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import psycopg
+import openai
+from init_db import DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT
 
 
 def _sanitize_title(title: str) -> str:
@@ -120,7 +124,6 @@ def transcribe_audio_with_whisper(mp3_path: str, output_txt_path: str) -> bool:
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
 
-    output_txt_path = mp3_path + ".vtt"
     host_ip = "localhost"
     port = "8001"
     model_name = "whisper"
@@ -344,10 +347,14 @@ def split_transcript_by_timestamps(
             if entry["start"] >= start_time and entry["start"] < end_time
         ]
 
-        # Create safe filename
+        # Create safe filename and chapter folder
         safe_title = _sanitize_title(timestamp["title"])
-        output_filename = f"chapter_{i+1:02d}_{safe_title}.vtt"
-        output_path = os.path.join(output_dir, output_filename)
+        chapter_folder_name = f"chapter_{i+1:02d}_{safe_title}"
+        chapter_folder_path = os.path.join(output_dir, chapter_folder_name)
+        os.makedirs(chapter_folder_path, exist_ok=True)
+
+        output_filename = "transcript.vtt"
+        output_path = os.path.join(chapter_folder_path, output_filename)
 
         # Write chapter transcript
         try:
@@ -633,8 +640,12 @@ def summarize_chapters_with_llm(
         chapter_idx = entry["index"]
         safe_title = entry["safe_title"]
         try:
-            transcript_filename = f"chapter_{chapter_idx:02d}_{safe_title}.vtt"
-            transcript_path = os.path.join(chapter_transcripts_dir, transcript_filename)
+            chapter_folder_name = f"chapter_{chapter_idx:02d}_{safe_title}"
+            chapter_folder_path = os.path.join(
+                chapter_transcripts_dir, chapter_folder_name
+            )
+            transcript_filename = "transcript.vtt"
+            transcript_path = os.path.join(chapter_folder_path, transcript_filename)
             if not os.path.exists(transcript_path):
                 print(
                     f"Warning: Transcript file missing for chapter {chapter_idx} ({entry['title']})."
@@ -681,6 +692,7 @@ def summarize_chapters_with_llm(
             for frame_info in chapter_frames[:32]:
                 with open(frame_info["path"], "rb") as bf:
                     frame_b64 = base64.b64encode(bf.read()).decode("utf-8")
+
                 user_content.append(
                     {
                         "type": "image_url",
@@ -712,8 +724,10 @@ def summarize_chapters_with_llm(
                         return None
                     response_data = json.loads(response.read().decode("utf-8"))
             except error.HTTPError as e:
+                error_body = e.read().decode("utf-8")
                 print(
-                    f"Warning: LLM returned HTTPError {e.code} for chapter {chapter_idx}."
+                    f"Warning: LLM returned HTTPError {e.code} for chapter {chapter_idx}. "
+                    f"Reason: {error_body[:200]}"
                 )
                 return None
             except error.URLError as e:
@@ -736,6 +750,23 @@ def summarize_chapters_with_llm(
             if not summary_text:
                 print(f"Warning: Empty summary returned for chapter {chapter_idx}.")
                 return None
+
+            summary_json_path = os.path.join(chapter_folder_path, "summary.json")
+            try:
+                with open(summary_json_path, "w", encoding="utf-8") as f:
+                    json.dump({entry["title"]: summary_text}, f, indent=2)
+            except IOError as e:
+                print(f"Error writing chapter summary JSON: {e}")
+
+            # Copy frames physically into the chapter directory
+            frames_out_dir = os.path.join(chapter_folder_path, "frames")
+            os.makedirs(frames_out_dir, exist_ok=True)
+            for frame_info in chapter_frames:
+                dest_path = os.path.join(
+                    frames_out_dir, os.path.basename(frame_info["path"])
+                )
+                if not os.path.exists(dest_path):
+                    shutil.copy2(frame_info["path"], dest_path)
 
             return (chapter_idx, {entry["time"]: {entry["title"]: summary_text}})
         except Exception as e:
@@ -983,6 +1014,167 @@ Transcript:
         return False
 
 
+def generate_chapter_embeddings(
+    video_hash: str,
+    summary_json_path: str,
+    chapter_transcripts_dir: str,
+    db_conn_str: str,
+    api_url: str = "http://localhost:8002/v1/embeddings",
+    model_name: str = "nemotron",
+) -> bool:
+    """
+    Generate and store vector embeddings for each chapter's combined text content.
+    """
+    print(f"\n{'='*60}")
+    print(f"EMBEDDING GENERATION START")
+    print(f"  video_hash:             {video_hash}")
+    print(f"  summary_json_path:      {summary_json_path}")
+    print(f"  chapter_transcripts_dir: {chapter_transcripts_dir}")
+    print(f"  api_url:                {api_url}")
+    print(f"  model_name:             {model_name}")
+    print(f"{'='*60}")
+
+    if not os.path.exists(summary_json_path):
+        print(f"Error: Summaries file not found at '{summary_json_path}'")
+        return False
+
+    try:
+        with open(summary_json_path, "r", encoding="utf-8") as f:
+            summaries = json.load(f)
+        print(
+            f"Loaded summaries JSON: {len(summaries)} entries, type={type(summaries).__name__}"
+        )
+    except Exception as e:
+        print(f"Error loading summaries JSON: {e}")
+        return False
+
+    # Log raw structure of first entry for debugging
+    if summaries:
+        print(f"  Raw first entry type: {type(summaries[0]).__name__}")
+        if isinstance(summaries[0], dict):
+            print(f"  Raw first entry keys: {list(summaries[0].keys())}")
+
+    success = True
+    print(f"\nGenerating embeddings for {len(summaries)} chapter(s)...")
+
+    for idx, chapter in enumerate(summaries, 1):
+        print(f"\n--- Chapter {idx} ---")
+        print(f"  Raw chapter type: {type(chapter).__name__}")
+
+        # The summary JSON uses nested format: {timestamp: {title: summary_text}}
+        # Unpack it to get the actual title and summary.
+        chapter_title = f"Chapter {idx}"
+        summary_text = ""
+        if isinstance(chapter, dict):
+            for _timestamp, title_summary in chapter.items():
+                print(
+                    f"  Timestamp key: '{_timestamp}', value type: {type(title_summary).__name__}"
+                )
+                if isinstance(title_summary, dict):
+                    for title, summary in title_summary.items():
+                        chapter_title = title
+                        summary_text = summary
+                        print(f"  Extracted title: '{chapter_title}'")
+                        print(f"  Summary length: {len(summary_text)} chars")
+                        print(f"  Summary preview: '{summary_text[:100]}...'")
+                        break
+                else:
+                    print(
+                        f"  WARNING: title_summary is not a dict, it's {type(title_summary).__name__}: {str(title_summary)[:100]}"
+                    )
+                break
+        else:
+            print(f"  WARNING: chapter is not a dict, it's {type(chapter).__name__}")
+
+        safe_title = _sanitize_title(chapter_title)
+        chapter_folder_name = f"chapter_{idx:02d}_{safe_title}"
+        chapter_folder_path = os.path.join(chapter_transcripts_dir, chapter_folder_name)
+        chapter_rel_path = f"{video_hash}/{chapter_folder_name}"
+
+        print(f"  safe_title:          '{safe_title}'")
+        print(f"  chapter_folder_name: '{chapter_folder_name}'")
+        print(f"  chapter_folder_path: '{chapter_folder_path}'")
+        print(f"  chapter_rel_path:    '{chapter_rel_path}'")
+        print(f"  Folder exists:       {os.path.exists(chapter_folder_path)}")
+
+        transcript_path = os.path.join(chapter_folder_path, "transcript.vtt")
+        transcript_text = ""
+
+        print(f"  transcript_path:     '{transcript_path}'")
+        print(f"  Transcript exists:   {os.path.exists(transcript_path)}")
+
+        if os.path.exists(transcript_path):
+            try:
+                with open(transcript_path, "r", encoding="utf-8") as f:
+                    transcript_content = f.read()
+                print(f"  Transcript raw size: {len(transcript_content)} chars")
+                transcript_text = _extract_plain_text_from_vtt(
+                    transcript_content
+                ).strip()
+                if not transcript_text:
+                    transcript_text = transcript_content.strip()
+                print(f"  Transcript text size: {len(transcript_text)} chars")
+            except IOError as e:
+                print(f"  WARNING: Could not read transcript for chapter {idx}: {e}")
+        else:
+            print(
+                f"  WARNING: No transcript file found, embedding will lack transcript content"
+            )
+
+        # Combine transcript and summary exclusively for this chapter
+        combined_text = f"Chapter Title: {chapter_title}\n\nSummary:\n{summary_text}\n\nTranscript:\n{transcript_text}"
+        print(f"  Combined text size:  {len(combined_text)} chars")
+        print(f"  Combined text preview: '{combined_text[:150]}...'")
+
+        try:
+            print(f"  Calling embedding API at {api_url}...")
+            client = openai.OpenAI(
+                base_url=api_url.rsplit("/embeddings", 1)[0], api_key="empty"
+            )
+
+            response = client.embeddings.create(model=model_name, input=combined_text)
+
+            embedding_vector = response.data[0].embedding
+            print(
+                f"  Embedding received: dim={len(embedding_vector)}, first 5 values={embedding_vector[:5]}"
+            )
+
+            # Store to Postgres
+            print(
+                f"  Inserting into DB: video_hash={video_hash}, chapter_path={chapter_rel_path}"
+            )
+            with psycopg.connect(db_conn_str, autocommit=True) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO chapter_embeddings (video_hash, chapter_path, model_name, embedding)
+                        VALUES (%s, %s, %s, %s::vector)
+                        ON CONFLICT (video_hash, chapter_path, model_name) 
+                        DO UPDATE SET embedding = EXCLUDED.embedding
+                        """,
+                        (
+                            video_hash,
+                            chapter_rel_path,
+                            model_name,
+                            embedding_vector,
+                        ),
+                    )
+            print(
+                f"  ✓ Saved '{model_name}' embedding for Chapter {idx}: '{chapter_title}'"
+            )
+        except Exception as e:
+            print(f"  ✗ Failed to generate/store embedding for chapter {idx}: {e}")
+            import traceback
+
+            traceback.print_exc()
+            success = False
+
+    print(f"\n{'='*60}")
+    print(f"EMBEDDING GENERATION COMPLETE (success={success})")
+    print(f"{'='*60}\n")
+    return success
+
+
 def main():
     """Main function to parse arguments and run the pipeline."""
     parser = argparse.ArgumentParser(
@@ -1019,17 +1211,58 @@ def main():
 
     # Helper to run the pipeline for one video file
     def process_video(video_path: str) -> None:
-        base_name = os.path.splitext(os.path.basename(video_path))[0]
-        out_audio = os.path.join(output_dir, f"{base_name}.mp3")
-        out_transcript = os.path.join(output_dir, f"{base_name}.mp3.vtt")
-        out_timestamps = os.path.join(output_dir, f"{base_name}_timestamps.txt")
-        chapter_dir = os.path.join(output_dir, f"{base_name}_chapters")
-        frames_dir = os.path.join(output_dir, f"{base_name}_frames")
-        summary_json_path = os.path.join(output_dir, f"{base_name}_summary.json")
+        print(f"\nComputing SHA-256 hash for {video_path}...")
+        sha256_hash = hashlib.sha256()
+        try:
+            with open(video_path, "rb") as f:
+                for byte_block in iter(lambda: f.read(4096), b""):
+                    sha256_hash.update(byte_block)
+            video_hash = sha256_hash.hexdigest()
+        except IOError as e:
+            print(f"Error reading video file to hash: {e}")
+            return
 
-        os.makedirs(output_dir, exist_ok=True)
+        video_out_dir = os.path.join(output_dir, video_hash)
+        os.makedirs(video_out_dir, exist_ok=True)
 
-        print(f"\nProcessing: {video_path}")
+        # Log to Database
+        conn_str = f"dbname={DB_NAME} user={DB_USER} password={DB_PASSWORD} host={DB_HOST} port={DB_PORT}"
+        video_basename = os.path.basename(video_path)
+        try:
+            with psycopg.connect(conn_str, autocommit=True) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO lecture_videos (video_hash, folder_path, video_name, done_processing)
+                        VALUES (%s, %s, %s, FALSE)
+                        ON CONFLICT (video_hash) 
+                        DO UPDATE SET done_processing = FALSE, folder_path = EXCLUDED.folder_path, video_name = EXCLUDED.video_name
+                        """,
+                        (video_hash, video_out_dir, video_basename),
+                    )
+            print(f"Logged video {video_hash} to database as processing.")
+        except Exception as e:
+            print(f"Warning: Failed to log video to database: {e}")
+
+        # Copy original video into the hash folder
+        original_ext = os.path.splitext(video_path)[1]
+        copied_video_path = os.path.join(video_out_dir, f"source_video{original_ext}")
+        if os.path.abspath(video_path) != os.path.abspath(
+            copied_video_path
+        ) and not os.path.exists(copied_video_path):
+            print(f"Copying source video to output directory...")
+            shutil.copy2(video_path, copied_video_path)
+
+        # Optional: We could point `video_path` to `copied_video_path` so subsequent tools use the local copy, but the original is fine.
+
+        out_audio = os.path.join(video_out_dir, "audio.mp3")
+        out_transcript = os.path.join(video_out_dir, "full_transcript.vtt")
+        out_timestamps = os.path.join(video_out_dir, "timestamps.txt")
+        chapter_dir = video_out_dir
+        frames_dir = os.path.join(video_out_dir, "all_frames_temp")
+        summary_json_path = os.path.join(video_out_dir, "chapters_summary.json")
+
+        print(f"Processing video into: {video_out_dir}")
 
         # Start extracting frames in the background
         with ThreadPoolExecutor(max_workers=2) as pipeline_executor:
@@ -1096,10 +1329,45 @@ def main():
                 print("Pipeline stopped at chapter summarization.")
                 return
 
+            # 7. Generate Nemotron Embeddings for semantic search
+            print("-" * 20)
+            if not generate_chapter_embeddings(
+                video_hash, summary_json_path, chapter_dir, conn_str
+            ):
+                print(
+                    "Warning: Chapter embedding generation encountered errors, but continuing to finalize."
+                )
+
+        # 8. Mark as complete in database
+        try:
+            with psycopg.connect(conn_str, autocommit=True) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE lecture_videos SET done_processing = TRUE WHERE video_hash = %s",
+                        (video_hash,),
+                    )
+            print("Successfully marked video as done_processing in database.")
+        except Exception as e:
+            print(f"Warning: Failed to update database status: {e}")
+
+        # 9. Cleanup scratch files
+        print("Cleaning up scratch files...")
+        if os.path.exists(out_audio):
+            try:
+                os.remove(out_audio)
+                print(f"Deleted {out_audio}")
+            except OSError as e:
+                print(f"Warning: Failed to delete {out_audio}: {e}")
+
+        if os.path.exists(frames_dir):
+            try:
+                shutil.rmtree(frames_dir)
+                print(f"Deleted {frames_dir}")
+            except OSError as e:
+                print(f"Warning: Failed to delete {frames_dir}: {e}")
+
         print("\n--- Pipeline finished for this file ---")
-        print(f"Audio file: {out_audio}")
-        print(f"Transcript file: {out_transcript}")
-        print(f"Timestamps file: {out_timestamps}")
+        print(f"Video Hash: {video_hash}")
         print(f"Chapter transcripts: {chapter_dir}")
         print(f"Pre-extracted Frames: {frames_dir}")
         print(f"Summary JSON: {summary_json_path}")

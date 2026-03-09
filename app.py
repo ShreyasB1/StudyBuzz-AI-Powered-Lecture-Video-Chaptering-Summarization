@@ -3,6 +3,7 @@ import sys
 import json
 import subprocess
 import uuid
+import hashlib
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask_cors import CORS
@@ -11,6 +12,8 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 import threading
 import urllib.request
 import urllib.error
+import psycopg
+from init_db import DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT
 
 BASE_DIR = Path(__file__).parent.absolute()
 STATIC_DIR = BASE_DIR / "static"
@@ -60,6 +63,14 @@ def _check_service(url):
             return "ready" if resp.status == 200 else "not ready"
     except Exception:
         return "not ready"
+
+
+def _hash_file(filepath):
+    sha256_hash = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        for byte_block in iter(lambda: f.read(4096), b""):
+            sha256_hash.update(byte_block)
+    return sha256_hash.hexdigest()
 
 
 def _process_video(job_id, video_path, video_basename):
@@ -125,9 +136,12 @@ def _process_video(job_id, video_path, video_basename):
             log_file.write(f"\n{'=' * 40}\n")
             log_file.write(f"Exit code: {process.returncode}\n")
 
-        transcript_path = OUTPUT_FOLDER / f"{base_name}.mp3.vtt"
-        timestamps_path = OUTPUT_FOLDER / f"{base_name}_timestamps.txt"
-        summary_path = OUTPUT_FOLDER / f"{base_name}_summary.json"
+        video_hash = _hash_file(video_path)
+        video_out_dir = OUTPUT_FOLDER / video_hash
+
+        transcript_path = video_out_dir / "full_transcript.vtt"
+        timestamps_path = video_out_dir / "timestamps.txt"
+        summary_path = video_out_dir / "chapters_summary.json"
 
         has_transcript = transcript_path.exists() and transcript_path.stat().st_size > 0
         has_timestamps = timestamps_path.exists() and timestamps_path.stat().st_size > 0
@@ -137,10 +151,11 @@ def _process_video(job_id, video_path, video_basename):
             jobs[job_id]["status"] = "completed"
             jobs[job_id]["progress"] = "Processing complete!"
             jobs[job_id]["files"] = {
-                "transcript": f"{base_name}.mp3.vtt",
-                "timestamps": f"{base_name}_timestamps.txt",
-                "summary": f"{base_name}_summary.json",
+                "transcript": f"{video_hash}/full_transcript.vtt",
+                "timestamps": f"{video_hash}/timestamps.txt",
+                "summary": f"{video_hash}/chapters_summary.json",
                 "video_basename": video_basename,
+                "video_hash": video_hash,
             }
         elif has_transcript:
             jobs[job_id]["status"] = "failed"
@@ -175,6 +190,87 @@ def _process_video(job_id, video_path, video_basename):
 # ---------------------------------------------------------------------------
 
 
+@app.route("/api/videos", methods=["GET"])
+def list_db_videos():
+    conn_str = f"dbname={DB_NAME} user={DB_USER} password={DB_PASSWORD} host={DB_HOST} port={DB_PORT}"
+    try:
+        with psycopg.connect(conn_str, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT video_hash, video_name, video_date, done_processing 
+                    FROM lecture_videos 
+                    ORDER BY video_date DESC
+                    """
+                )
+                rows = cur.fetchall()
+
+        videos = [
+            {
+                "video_hash": row[0],
+                "video_name": row[1],
+                "video_date": row[2].isoformat() if row[2] else None,
+                "done_processing": row[3],
+            }
+            for row in rows
+        ]
+        return jsonify({"videos": videos}), 200
+    except Exception as e:
+        return jsonify({"error": f"Database error: {e}"}), 500
+
+
+@app.route("/api/results/hash/<video_hash>", methods=["GET"])
+def get_results_by_hash(video_hash):
+    video_out_dir = OUTPUT_FOLDER / video_hash
+    if not video_out_dir.exists():
+        return jsonify({"error": "Video results not found"}), 404
+
+    results = {}
+
+    transcript_path = video_out_dir / "full_transcript.vtt"
+    if transcript_path.exists():
+        results["transcript"] = transcript_path.read_text(encoding="utf-8")
+
+    timestamps_path = video_out_dir / "timestamps.txt"
+    if timestamps_path.exists():
+        lines = timestamps_path.read_text(encoding="utf-8").strip().split("\n")
+        results["timestamps"] = [
+            {"time": l.split(" - ")[0].strip(), "title": l.split(" - ")[1].strip()}
+            for l in lines
+            if " - " in l
+        ]
+
+    summary_path = video_out_dir / "chapters_summary.json"
+    if summary_path.exists():
+        try:
+            results["summary"] = json.loads(summary_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            results["summary"] = []
+
+    # We don't have the original upload name unless we query the DB, but we can guess the extension.
+    # Looking for source_video.*
+    source_video = next(video_out_dir.glob("source_video.*"), None)
+    results["video_filename"] = (
+        source_video.name if source_video else "source_video.mp4"
+    )
+    results["video_hash"] = video_hash
+
+    return jsonify(results), 200
+
+
+@app.route("/api/video/hash/<video_hash>", methods=["GET"])
+def stream_video_by_hash(video_hash):
+    video_out_dir = OUTPUT_FOLDER / video_hash
+    if not video_out_dir.exists():
+        return jsonify({"error": "Video directory not found"}), 404
+
+    source_video = next(video_out_dir.glob("source_video.*"), None)
+    if not source_video or not source_video.exists():
+        return jsonify({"error": "Video file not found in output directory"}), 404
+
+    return send_file(str(source_video), mimetype="video/mp4")
+
+
 @app.route("/api/upload", methods=["POST"])
 def upload_video():
     if "video" not in request.files:
@@ -195,11 +291,16 @@ def upload_video():
 
     mistral_status = _check_service("http://localhost:8000/health")
     whisper_status = _check_service("http://localhost:8001/health")
-    if mistral_status != "ready" or whisper_status != "ready":
+    embedder_status = _check_service("http://localhost:8002/health")
+    if (
+        mistral_status != "ready"
+        or whisper_status != "ready"
+        or embedder_status != "ready"
+    ):
         return (
             jsonify(
                 {
-                    "error": f"Model servers not ready yet. Mistral: {mistral_status}, Whisper: {whisper_status}. "
+                    "error": f"Model servers not ready yet. Mistral: {mistral_status}, Whisper: {whisper_status}, Nemotron: {embedder_status}. "
                     "Please wait for models to finish loading and try again."
                 }
             ),
@@ -296,6 +397,7 @@ def health_check():
                 "service": "studybuzz",
                 "mistral": _check_service("http://localhost:8000/health"),
                 "whisper": _check_service("http://localhost:8001/health"),
+                "nemotron": _check_service("http://localhost:8002/health"),
             }
         ),
         200,
