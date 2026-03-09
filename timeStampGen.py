@@ -1197,12 +1197,19 @@ def main():
         default="output",
         help="The directory to save the output files. Defaults to 'output'.",
     )
+    parser.add_argument(
+        "-f",
+        "--force",
+        action="store_true",
+        help="Force reprocessing even if the video is already marked as complete in the database.",
+    )
 
     args = parser.parse_args()
 
     input_file = args.input_file
     input_dir = args.input_dir
     output_dir = args.output_dir
+    force = args.force
 
     if not input_file and not input_dir:
         parser.error(
@@ -1225,9 +1232,29 @@ def main():
         video_out_dir = os.path.join(output_dir, video_hash)
         os.makedirs(video_out_dir, exist_ok=True)
 
-        # Log to Database
         conn_str = f"dbname={DB_NAME} user={DB_USER} password={DB_PASSWORD} host={DB_HOST} port={DB_PORT}"
         video_basename = os.path.basename(video_path)
+
+        # Check if the video has already been fully processed
+        if not force:
+            try:
+                with psycopg.connect(conn_str, autocommit=True) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT done_processing FROM lecture_videos WHERE video_hash = %s",
+                            (video_hash,),
+                        )
+                        row = cur.fetchone()
+                        if row and row[0] is True:
+                            print(
+                                f"Video {video_hash} is already marked as complete in the database. "
+                                "Skipping. Use --force to reprocess."
+                            )
+                            return
+            except Exception as e:
+                print(f"Warning: Could not check processing status in database: {e}")
+
+        # Log to Database
         try:
             with psycopg.connect(conn_str, autocommit=True) as conn:
                 with conn.cursor() as cur:
