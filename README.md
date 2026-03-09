@@ -13,7 +13,7 @@ StudyBuzz transforms hour-long lecture recordings into navigable, summarized con
 - **Scene Detection** — FFmpeg extracts key frames at scene changes for visual context
 - **AI Summaries** — Each chapter receives a concise summary using multimodal LLM analysis (text + frames)
 - **Semantic Search** — Nemotron-8B text embeddings powered by Postgres pgvector for advanced chapter querying
-- **Supports Multiple Formats** — MP4, MKV, MOV, AVI, WEBM, MPEG
+- **Supports Multiple Formats** — MP4, MKV, MOV, AVI, WEBM, FLV, M4V, MPEG
 
 ---
 
@@ -51,17 +51,22 @@ StudyBuzz transforms hour-long lecture recordings into navigable, summarized con
 
 ## Pipeline Stages
 
+The pipeline processes each video through the following stages. Scene frame extraction (Stage A) runs **in parallel** with Stages 1-4 to reduce total processing time.
+
 | Stage | Tool | Input | Output |
 |-------|------|-------|--------|
-| 1. Audio Extraction | FFmpeg | `video.mp4` | `video.mp3` |
-| 2. Speech Transcription | Whisper (vLLM API, port 8001) | `video.mp3` | `video.mp3.vtt` |
-| 3. Chapter Generation | Mistral-Large-3 (vLLM API, port 8000) | transcript | `video_timestamps.txt` |
-| 4. Video Segmentation | FFmpeg | video + timestamps | `clip_01.mp4`, `clip_02.mp4`... |
-| 5. Transcript Segmentation | Python | VTT + timestamps | `chapter_01.vtt`, `chapter_02.vtt`... |
-| 6. Scene Frame Extraction | FFmpeg | clips | base64 PNG frames |
-| 7. Chapter Summarization | Mistral-Large-3 (multimodal) | clips + transcripts + frames | `video_summary.json` |
-| 8. Database Tracking | PostgreSQL | job paths | `lecture_videos` row |
-| 9. Vector Embeddings | Nemotron-8B (vLLM API, port 8002) | transcript + summary | `chapter_embeddings` |
+| 0. Database Registration | PostgreSQL | video file | `lecture_videos` row (processing=false) |
+| 1. Audio Extraction | FFmpeg | `video.mp4` | `audio.mp3` |
+| 2. Speech Transcription | Whisper (vLLM API, port 8001) | `audio.mp3` | `full_transcript.vtt` |
+| 3. Chapter Generation | Mistral-Large-3 (vLLM API, port 8000) | transcript | `timestamps.txt` |
+| 4. Transcript Segmentation | Python | VTT + timestamps | `chapter_NN_Title/transcript.vtt` |
+| A. Scene Frame Extraction *(parallel)* | FFmpeg | source video | base64 PNG frames (temp) |
+| 5. Chapter Summarization | Mistral-Large-3 (multimodal, ≤10 workers) | transcripts + frames | `chapters_summary.json` + per-chapter `summary.json` |
+| 6. Vector Embeddings | Nemotron-8B (vLLM API, port 8002) | transcript + summary | `chapter_embeddings` table |
+| 7. Finalize | PostgreSQL | — | `lecture_videos.done_processing = true` |
+| 8. Cleanup | local filesystem | temp files | deletes `audio.mp3` + `all_frames_temp/` |
+
+> **Note:** If a video hash already exists in the database with `done_processing = TRUE`, the entire pipeline is skipped. Use `--force` to override. If only a transcript file exists (but processing is not marked complete), Stages 1-2 are skipped automatically.
 
 ---
 
@@ -76,8 +81,8 @@ StudyBuzz transforms hour-long lecture recordings into navigable, summarized con
 ### Models (served via vLLM)
 
 - **Mistral-Large-3**: `mistralai/Mistral-Large-3-675B-Instruct-2512` (port 8000, 8 GPUs)
-- **Whisper**: `openai/whisper-large-v3` (port 8001, 1 GPU, 9% VRAM)
-- **Nemotron-Embed**: `nvidia/llama-embed-nemotron-8b` (port 8002, 4 GPUs)
+- **Whisper**: `openai/whisper-large-v3` (port 8001, 1 GPU, ~7.5% VRAM)
+- **Nemotron-Embed**: `nvidia/llama-embed-nemotron-8b` (port 8002, 4 GPUs, ~7% VRAM)
 
 ---
 
@@ -110,7 +115,8 @@ podman run --device nvidia.com/gpu=all \
   --tokenizer-mode mistral \
   --config-format mistral \
   --enable-auto-tool-choice \
-  --tool-call-parser mistral
+  --tool-call-parser mistral \
+  --disable-custom-all-reduce
 ```
 
 The Mistral VLLM server will be accessible at `http://localhost:8000`.
@@ -156,6 +162,7 @@ podman run --device nvidia.com/gpu=all \
   -v /storage/ice-shared/vip-vp4/Spring2026/SB-V-1a/huggingface:/root/.cache/huggingface \
   --env "HUGGING_FACE_HUB_TOKEN=<YOUR_HF_TOKEN>" \
   --env "CUDA_VISIBLE_DEVICES=4,5,6,7" \
+  --env "VLLM_USE_V1=0" \
   docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129 \
   --model nvidia/llama-embed-nemotron-8b \
   --served-model-name nemotron \
@@ -164,13 +171,15 @@ podman run --device nvidia.com/gpu=all \
   --max-model-len 32768 \
   --trust-remote-code \
   --dtype bfloat16 \
+  --enforce-eager \
+  --disable-custom-all-reduce \
   --host 0.0.0.0 \
   --port 8002
 ```
 
 The Nemotron Embedder VLLM server will be accessible at `http://localhost:8002`.
 
-The commands must be run in the output directory (create it if it does not exist) where the `timeStampGen.py` script will output the intermediate files. There must also be a `video/` directory in the output directory where the input video is stored.
+> **Note**: `CUDA_VISIBLE_DEVICES` may need adjustment depending on your GPU topology. The `--disable-custom-all-reduce` flag prevents NCCL IPC conflicts when multiple vLLM instances share the same GPUs.
 
 ---
 
@@ -191,6 +200,9 @@ pip install -r requirements.txt
 pip install -r requirements_backend.txt
 ```
 
+- `requirements.txt` — pipeline dependencies (`httpx`, `openai`)
+- `requirements_backend.txt` — backend server dependencies (`Flask`, `flask-cors`, `Werkzeug`, `psycopg[binary]`)
+
 ### 3. Start the Database (pgvector)
 
 ```bash
@@ -205,13 +217,84 @@ podman run -d \
   pgvector/pgvector:pg18-trixie
 ```
 
-### 4. Start the Application
+The database schema is auto-initialized by `init_db.py` on first run (runs inside the Docker container via `CMD`).
+
+### 4. Environment Variables
+
+Database connection can be customized via environment variables (defaults shown):
+
+| Variable | Default | Description |
+|---|---|---|
+| `VIP_DB_NAME` | `vip_db` | PostgreSQL database name |
+| `VIP_DB_USER` | `postgres` | Database user |
+| `VIP_DB_PASSWORD` | `mysecret` | Database password |
+| `VIP_DB_HOST` | `localhost` | Database host |
+| `VIP_DB_PORT` | `5432` | Database port |
+
+### 5. Start the Application
 
 ```bash
 python app.py
 ```
 
 The application will be available at `http://localhost:5000`.
+
+---
+
+## Makefile Targets
+
+The `Makefile` provides convenient targets for container management using Podman:
+
+| Target | Description |
+|---|---|
+| `make help` | Show all available targets |
+| `make build-app` | Build the StudyBuzz Docker image |
+| `make run-app` | Build and run the Flask app container (standalone) |
+| `make run-mistral` | Run the Mistral vLLM container |
+| `make run-whisper` | Run the Whisper vLLM container |
+| `make run-embedder` | Run the Nemotron-8B embedder container |
+| `make run-db` | Run the PostgreSQL/pgvector database container |
+| `make deploy` | Create a Podman pod and start **all** containers with sequenced model loading |
+| `make update-app` | Fast restart of JUST the Flask app container (preserves running models) |
+| `make update-whisper` | Restart just the Whisper container |
+| `make clean` | Stop and remove all containers and the pod |
+
+Common variables (override with `make VAR=value`):
+
+```bash
+make deploy HF_TOKEN=hf_xxx HUGGINGFACE_CACHE_PATH=/path/to/cache NUM_GPUS=8
+```
+
+> **Note**: `make deploy` waits for Mistral to pass its health check before starting Whisper and Nemotron, preventing VRAM spikes and NCCL collisions during concurrent model initialization.
+
+---
+
+## Database Schema
+
+StudyBuzz uses PostgreSQL with the `pgvector` extension. The schema is managed by `init_db.py` and contains two tables:
+
+**`lecture_videos`** — tracks each processed video
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | `BIGSERIAL` | Primary key |
+| `video_hash` | `TEXT UNIQUE` | SHA-256 hash of the video file |
+| `done_processing` | `BOOLEAN` | Whether the pipeline has completed |
+| `note` | `TEXT` | Optional notes |
+| `folder_path` | `TEXT` | Absolute path to the output directory |
+| `video_name` | `TEXT` | Original filename |
+| `video_date` | `TIMESTAMPTZ` | Timestamp of when the video was added |
+
+**`chapter_embeddings`** — stores vector embeddings per chapter
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | `BIGSERIAL` | Primary key |
+| `video_hash` | `TEXT` | Foreign key → `lecture_videos.video_hash` (cascade delete) |
+| `chapter_path` | `TEXT` | Relative path to the chapter directory |
+| `model_name` | `TEXT` | Embedding model used (e.g., `nemotron`) |
+| `embedding` | `VECTOR(4096)` | 4096-dim embedding vector |
+| `created_at` | `TIMESTAMPTZ` | Timestamp |
 
 ---
 
@@ -226,8 +309,15 @@ timeStampGen.py --help
 to see the usage of the script. The main arguments are:
 
 ```
-usage: timeStampGen.py [-h] [-d INPUT_DIR] [-o OUTPUT_DIR] [input_file]
+usage: timeStampGen.py [-h] [-d INPUT_DIR] [-o OUTPUT_DIR] [-f] [input_file]
 ```
+
+| Flag | Description |
+|---|---|
+| `input_file` | Path to a single video file |
+| `-d`, `--input-dir` | Directory of video files to batch process |
+| `-o`, `--output-dir` | Output directory (default: `output`) |
+| `-f`, `--force` | Reprocess even if the video is already marked complete in the database |
 
 A sample command to run the script is as follows:
 ```bash
@@ -250,28 +340,30 @@ python search.py "Your question or keyword here" --limit 5
 SB-V-1a/
 ├── app.py                      # Flask backend server
 ├── timeStampGen.py             # Main processing pipeline
+├── search.py                   # CLI semantic search over chapter embeddings
 ├── vllm_to_vtt.py              # VTT conversion utility
-├── init_db.py                  # PostgreSQL database initialization
-├── vip_db                      # SQL schema (pgvector)
+├── init_db.py                  # PostgreSQL database initialization & schema
+├── bench.py                    # Benchmarking utility
+├── run.sh                      # Convenience run script
 ├── requirements.txt            # Pipeline dependencies (httpx, openai)
 ├── requirements_backend.txt    # Backend dependencies (Flask, psycopg)
 ├── static/
 │   └── index.html              # Minimal test frontend
 ├── Dockerfile                  # App container image definition
 ├── .dockerignore               # Docker build exclusions
+├── Makefile                    # Podman container management targets
+├── install.sh                  # One-time image pre-build (app + vLLM + pgvector)
 ├── manifest.yml                # Open OnDemand app registration
 ├── form.yml.erb                # OnDemand launch form
 ├── submit.yml.erb              # SLURM job parameters
 ├── view.html.erb               # OnDemand connect button
 ├── template/
 │   ├── before.sh.erb           # Port allocation, env setup
-│   ├── script.sh.erb           # Main deployment script (3 containers)
+│   ├── script.sh.erb           # Main deployment script (5 containers in a pod)
 │   ├── after.sh                # Wait for app readiness
 │   └── clean.sh                # Container cleanup
-├── Makefile                    # Manual container management
-├── install.sh                  # One-time image pre-build
 ├── uploads/                     # Uploaded video files
-└── output/                      # Generated artifacts output_folder
+└── output/                      # Generated artifacts
     └── <VIDEO_HASH>/            # Deterministic SHA-256 folder per video
         ├── source_video.mp4     # Original video copied here
         ├── full_transcript.vtt  # Raw Whisper transcript
@@ -311,7 +403,7 @@ cd SB-V-1a
 
 ### Step 2: Pre-build container images
 
-From inside the app directory, run the install script to build the StudyBuzz Docker image and pull both vLLM images. Fix CRLF line endings first if the code was edited on Windows.
+From inside the app directory, run the install script to build the StudyBuzz Docker image and pull the vLLM and pgvector images. Fix CRLF line endings first if the code was edited on Windows.
 
 ```bash
 sed -i 's/\r$//' install.sh
@@ -322,8 +414,8 @@ bash install.sh
 This will:
 1. Fix CRLF line endings on all deployment scripts
 2. Build the StudyBuzz app image (Python + FFmpeg)
-3. Pull the Mistral vLLM image (`vllm-openai:qwen3_5-x86_64-cu129`)
-4. Pull the Whisper vLLM image (`vllm-openai:v0.14.0`)
+3. Pull the vLLM image (`vllm-openai:qwen3_5-x86_64-cu129`)
+4. Pull the pgvector database image (`pgvector:pg18-trixie`)
 
 ### Step 3: Launch from Open OnDemand
 
@@ -343,7 +435,7 @@ This will:
 
 Once the SLURM job starts and containers are ready, a **Connect to StudyBuzz** button appears. Click it to open the web UI.
 
-> **Startup time:** The web interface is accessible within minutes. Mistral takes ~20 minutes to load, Whisper takes ~2 minutes. Video processing will not work until both models finish loading. Use the **Service Health** check button in the UI to monitor readiness.
+> **Startup time:** The web interface is accessible within minutes. Mistral takes ~20 minutes to load, Whisper takes ~2 minutes. Video processing will not work until all three models finish loading. Use the **Service Health** check button in the UI to monitor readiness.
 
 ### How it works
 
@@ -357,7 +449,7 @@ Compute Node (H200 HGX, 8 GPUs)
     │     ├── studybuzz-app container     ← Flask + FFmpeg (port 5000)
     │     ├── pgvector-local container    ← Postgres Vector DB (port 5432)
     │     ├── mistral-vllm container      ← Mistral-Large-3-675B (port 8000, 90% VRAM)
-    │     ├── whisper-vllm container      ← Whisper-large-v3 (port 8001, 9% VRAM)
+    │     ├── whisper-vllm container      ← Whisper-large-v3 (port 8001, 7.5% VRAM)
     │     └── nemotron-vllm container     ← Nemotron-8B (port 8002, 7% VRAM)
     │
     ▼
@@ -416,6 +508,18 @@ These are harmless. They appear because apt-get runs non-interactively inside th
 - Check that the audio file was converted to MP3 successfully
 - Review Whisper container logs for errors
 
+### Nemotron embedding errors
+
+- Verify Nemotron is healthy: `curl http://localhost:8002/health`
+- Check that `CUDA_VISIBLE_DEVICES` matches available GPUs on the node
+- Ensure `VLLM_USE_V1=0` is set (required for embedding models)
+- Check container logs: `podman logs studybuzz-embedder`
+- The `--disable-custom-all-reduce` flag is required when co-locating with Mistral to avoid NCCL IPC conflicts
+
+### NCCL collisions or IPC errors between vLLM containers
+
+When running multiple vLLM instances on the same node, NCCL's custom all-reduce can cause IPC conflicts. Fix by adding `--disable-custom-all-reduce` to all vLLM containers sharing the same GPUs. The Makefile targets already include this flag.
+
 ---
 
 ## Acknowledgments
@@ -423,5 +527,6 @@ These are harmless. They appear because apt-get runs non-interactively inside th
 - [Mistral AI](https://mistral.ai/) — Mistral-Large-3
 - [OpenAI Whisper](https://github.com/openai/whisper)
 - [vLLM](https://github.com/vllm-project/vllm)
+- [NVIDIA NeMo](https://github.com/NVIDIA/NeMo) — Nemotron-8B Embeddings
 - Georgia Tech AI Makerspace (https://coe.gatech.edu/academics/ai-for-engineering/ai-makerspace)
 - Open OnDemand (https://osc.github.io/ood-documentation/latest/)
