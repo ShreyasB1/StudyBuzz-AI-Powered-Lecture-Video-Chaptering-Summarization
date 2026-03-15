@@ -145,7 +145,7 @@ run-db:
 	  -e PGDATA=/var/lib/postgresql/data/pgdata \
 	  -e PGPORT=5432 \
 	  -v $(PWD)/my_pgdata:/var/lib/postgresql/data:Z \
-	  pgvector/pgvector:pg18-trixie
+	  docker.io/pgvector/pgvector:pg18-trixie
 	@echo "PostgreSQL pgvector database started on port 5432"
 
 deploy: build-app run-db

@@ -112,9 +112,31 @@ podman run -d \
   -e PGDATA=/var/lib/postgresql/data/pgdata \
   -e PGPORT=5432 \
   -v "${PWD}/my_pgdata:/var/lib/postgresql/data:Z" \
-  pgvector/pgvector:pg18-trixie
+  docker.io/pgvector/pgvector:pg18-trixie
 
-echo "Database container started."
+if podman ps --filter "name=pgvector_local-${SLURM_JOB_ID}" --format "{{.Names}}" | grep -q "pgvector_local"; then
+  echo "PostgreSQL container is running."
+else
+  echo "ERROR: PostgreSQL container failed to start!"
+  podman logs "pgvector_local-${SLURM_JOB_ID}" 2>&1 || true
+fi
+
+# Wait for PostgreSQL to accept connections before starting the app
+echo "Waiting for PostgreSQL to become ready..."
+PG_ELAPSED=0
+PG_TIMEOUT=60
+while [ ${PG_ELAPSED} -lt ${PG_TIMEOUT} ]; do
+  if podman exec "pgvector_local-${SLURM_JOB_ID}" pg_isready -U postgres > /dev/null 2>&1; then
+    echo "PostgreSQL is ready (after ${PG_ELAPSED}s)."
+    break
+  fi
+  sleep 2
+  PG_ELAPSED=$((PG_ELAPSED + 2))
+done
+if [ ${PG_ELAPSED} -ge ${PG_TIMEOUT} ]; then
+  echo "WARNING: PostgreSQL did not become ready within ${PG_TIMEOUT}s."
+  podman logs "pgvector_local-${SLURM_JOB_ID}" 2>&1 | tail -20 || true
+fi
 
 # ---------------------------------------------------------------------------
 # Start the StudyBuzz Flask container (no GPU needed)
