@@ -18,7 +18,7 @@ echo "App source directory: ${APP_DIR}"
 # ---------------------------------------------------------------------------
 echo "Copying source code to job directory..."
 
-for item in Dockerfile .dockerignore app.py timeStampGen.py vllm_to_vtt.py requirements.txt requirements_backend.txt Makefile; do
+for item in Dockerfile .dockerignore app.py timeStampGen.py vllm_to_vtt.py init_db.py requirements.txt requirements_backend.txt Makefile; do
   if [ -f "${APP_DIR}/${item}" ]; then
     cp "${APP_DIR}/${item}" "${PWD}/"
     echo "  Copied ${item}"
