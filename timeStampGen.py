@@ -1,7 +1,7 @@
-import subprocess
 import os
 import json
 import argparse
+import asyncio
 import glob
 import re
 import base64
@@ -9,8 +9,7 @@ import shutil
 import tempfile
 import hashlib
 from typing import Optional
-from urllib import request, error
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import aiohttp
 import psycopg
 import openai
 from init_db import DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT
@@ -24,7 +23,7 @@ def _sanitize_title(title: str) -> str:
     return safe_title.strip().replace(" ", "_")
 
 
-def convert_video_to_mp3(video_path: str, output_path: str) -> bool:
+async def convert_video_to_mp3(video_path: str, output_path: str) -> bool:
     """
     Converts a video file to an MP3 audio file using ffmpeg.
 
@@ -73,17 +72,22 @@ def convert_video_to_mp3(video_path: str, output_path: str) -> bool:
     # 4. Execute the command.
     print(f"Converting '{video_path}' to '{output_path}'...")
     try:
-        result = subprocess.run(command, check=True, capture_output=True, text=True)
+        proc = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            print("Error during conversion.")
+            print(f"ffmpeg returned non-zero exit status: {proc.returncode}")
+            print("ffmpeg stderr:", stderr.decode())
+            return False
         print("Conversion successful!")
         return True
     except FileNotFoundError:
         print("Error: 'ffmpeg' command not found.")
         print("Please ensure ffmpeg is installed and in your system's PATH.")
-        return False
-    except subprocess.CalledProcessError as e:
-        print("Error during conversion.")
-        print(f"ffmpeg returned non-zero exit status: {e.returncode}")
-        print("ffmpeg stderr:", e.stderr)
         return False
 
 
@@ -102,7 +106,7 @@ def format_timestamp(seconds: float) -> str:
     return f"{hours:02}:{minutes:02}:{secs:02}.{millis:03}"
 
 
-def transcribe_audio_with_whisper(mp3_path: str, output_txt_path: str) -> bool:
+async def transcribe_audio_with_whisper(mp3_path: str, output_txt_path: str) -> bool:
     """
     Transcribes an MP3 audio file to text using VLLM Whisper API.
 
@@ -130,21 +134,13 @@ def transcribe_audio_with_whisper(mp3_path: str, output_txt_path: str) -> bool:
     language = "en"
 
     base_url = f"http://{host_ip}:{port}/v1"
-    try:
-        from openai import OpenAI
-    except ImportError:
-        print(
-            "Error: openai package is not installed. Please install it using 'pip install openai'"
-        )
-        return False
-
-    client = OpenAI(base_url=base_url, api_key="EMPTY")
+    client = openai.AsyncOpenAI(base_url=base_url, api_key="EMPTY")
 
     print(f"Transcribing '{mp3_path}' to '{output_txt_path}' using {base_url}...")
 
     try:
         with open(mp3_path, "rb") as audio_file:
-            transcription = client.audio.transcriptions.create(
+            transcription = await client.audio.transcriptions.create(
                 model=model_name,
                 file=audio_file,
                 response_format="verbose_json",
@@ -433,7 +429,7 @@ def _extract_plain_text_from_vtt(content: str) -> str:
     return "\n".join(lines)
 
 
-def _extract_all_scene_frames(video_path: str, temp_dir: str) -> list[dict]:
+async def _extract_all_scene_frames(video_path: str, temp_dir: str) -> list[dict]:
     """Extracts scene change frames from the entire video, treating the output PTS as frame index."""
     if not os.path.exists(video_path):
         print(f"Warning: Video file not found at {video_path}")
@@ -442,7 +438,7 @@ def _extract_all_scene_frames(video_path: str, temp_dir: str) -> list[dict]:
     os.makedirs(temp_dir, exist_ok=True)
 
     # Get the frame rate to calculate seconds from frame index
-    metadata = _probe_video_metadata(video_path)
+    metadata = await _probe_video_metadata(video_path)
     fps = metadata.get("fps")
     if not fps or fps <= 0:
         fps = 30.0  # Fallback to standard 30 fps
@@ -473,10 +469,15 @@ def _extract_all_scene_frames(video_path: str, temp_dir: str) -> list[dict]:
 
     print(f"Extracting all scene frames from {video_path}...")
     try:
-        subprocess.run(command, check=True, capture_output=True, text=True)
-    except subprocess.CalledProcessError as e:
-        print(f"Error extracting frames: {e.stderr}")
-        return []
+        proc = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            print(f"Error extracting frames: {stderr.decode()}")
+            return []
     except Exception as e:
         print(f"Error processing frames: {e}")
         return []
@@ -511,7 +512,7 @@ def _extract_timestamp_lines(text: str) -> list[str]:
     return matches
 
 
-def _probe_video_metadata(video_path: str) -> dict[str, Optional[float]]:
+async def _probe_video_metadata(video_path: str) -> dict[str, Optional[float]]:
     """Return a lightweight metadata snapshot for debugging video clips."""
     cmd = [
         "ffprobe",
@@ -527,8 +528,15 @@ def _probe_video_metadata(video_path: str) -> dict[str, Optional[float]]:
     ]
 
     try:
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        info = json.loads(result.stdout)
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode != 0:
+            return {"frame_count": None, "fps": None, "duration": None}
+        info = json.loads(stdout.decode())
         stream = (info.get("streams") or [{}])[0]
 
         raw_frame_count = stream.get("nb_read_frames")
@@ -557,7 +565,7 @@ def _probe_video_metadata(video_path: str) -> dict[str, Optional[float]]:
         return {"frame_count": None, "fps": None, "duration": None}
 
 
-def summarize_chapters_with_llm(
+async def summarize_chapters_with_llm(
     timestamps_path: str,
     frames_meta: list[dict],
     chapter_transcripts_dir: str,
@@ -636,7 +644,9 @@ def summarize_chapters_with_llm(
         f"Preparing to summarize {len(timestamps)} chapter(s) with pre-extracted frames."
     )
 
-    def _summarize_entry(entry: dict) -> Optional[tuple[int, dict]]:
+    async def _summarize_entry(
+        session: aiohttp.ClientSession, entry: dict
+    ) -> Optional[tuple[int, dict]]:
         chapter_idx = entry["index"]
         safe_title = entry["safe_title"]
         try:
@@ -710,29 +720,20 @@ def summarize_chapters_with_llm(
             print(
                 f"Requesting summary for chapter {chapter_idx}: {entry['title']} using {min(32, len(chapter_frames))} frames."
             )
-            data = json.dumps(payload).encode("utf-8")
-            req = request.Request(
-                api_url, data=data, headers={"Content-Type": "application/json"}
-            )
 
             try:
-                with request.urlopen(req) as response:
-                    if response.status != 200:
+                async with session.post(api_url, json=payload) as resp:
+                    if resp.status != 200:
+                        error_body = await resp.text()
                         print(
-                            f"Warning: LLM returned status {response.status} for chapter {chapter_idx}."
+                            f"Warning: LLM returned status {resp.status} for chapter {chapter_idx}. "
+                            f"Reason: {error_body[:200]}"
                         )
                         return None
-                    response_data = json.loads(response.read().decode("utf-8"))
-            except error.HTTPError as e:
-                error_body = e.read().decode("utf-8")
+                    response_data = await resp.json()
+            except aiohttp.ClientError as e:
                 print(
-                    f"Warning: LLM returned HTTPError {e.code} for chapter {chapter_idx}. "
-                    f"Reason: {error_body[:200]}"
-                )
-                return None
-            except error.URLError as e:
-                print(
-                    f"Warning: Failed to contact LLM for chapter {chapter_idx}: {e.reason}"
+                    f"Warning: Failed to contact LLM for chapter {chapter_idx}: {e}"
                 )
                 return None
             except Exception as e:
@@ -775,24 +776,21 @@ def summarize_chapters_with_llm(
             )
             return None
 
+    async with aiohttp.ClientSession() as session:
+        results = await asyncio.gather(
+            *[_summarize_entry(session, entry) for entry in timestamps],
+            return_exceptions=True,
+        )
+
     summaries = []
-    max_workers = min(10, len(timestamps)) or 1
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_entry = {
-            executor.submit(_summarize_entry, entry): entry["index"]
-            for entry in timestamps
-        }
-        for future in as_completed(future_to_entry):
-            try:
-                result = future.result()
-            except Exception as exc:
-                chapter_idx = future_to_entry[future]
-                print(
-                    f"Warning: Unexpected error during summarization for chapter {chapter_idx}: {exc}"
-                )
-                continue
-            if result:
-                summaries.append(result)
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            print(
+                f"Warning: Unexpected error during summarization for chapter {timestamps[i]['index']}: {result}"
+            )
+            continue
+        if result:
+            summaries.append(result)
 
     if not summaries:
         print("No summaries were generated.")
@@ -816,7 +814,7 @@ def summarize_chapters_with_llm(
     return True
 
 
-def generate_timestamps_with_llm(
+async def generate_timestamps_with_llm(
     transcript_path: str, output_timestamps_path: str
 ) -> bool:
     """
@@ -874,14 +872,12 @@ Transcript:
         "temperature": 0.2,  # Lower temperature for more deterministic, structured output
     }
 
-    # 4. Make the API call using Python's built-in urllib.
+    # 4. Make the API call using aiohttp.
     print(f"Sending transcript to '{model_name}' at '{api_url}'...")
-    data = json.dumps(payload).encode("utf-8")
-    req = request.Request(
-        api_url, data=data, headers={"Content-Type": "application/json"}
-    )
 
-    def _fallback_to_completions(prompt_text: str) -> Optional[str]:
+    async def _fallback_to_completions(
+        session: aiohttp.ClientSession, prompt_text: str
+    ) -> Optional[str]:
         base_url = api_url.rsplit("/chat/completions", 1)[0]
         completions_url = f"{base_url}/completions"
         completion_payload = {
@@ -890,28 +886,22 @@ Transcript:
             "temperature": 0.2,
             "max_tokens": 512,
         }
-        completion_data = json.dumps(completion_payload).encode("utf-8")
-        completion_req = request.Request(
-            completions_url,
-            data=completion_data,
-            headers={"Content-Type": "application/json"},
-        )
 
         print(f"Falling back to completions endpoint at '{completions_url}'...")
         try:
-            with request.urlopen(completion_req) as completion_response:
-                if completion_response.status != 200:
+            async with session.post(completions_url, json=completion_payload) as resp:
+                if resp.status != 200:
                     print(
                         "Fallback completions endpoint returned status "
-                        f"{completion_response.status}."
+                        f"{resp.status}."
                     )
                     return None
-                completion_json = json.loads(completion_response.read().decode("utf-8"))
+                completion_json = await resp.json()
                 return completion_json.get("choices", [{}])[0].get("text", "")
-        except error.URLError as completion_err:
+        except aiohttp.ClientError as completion_err:
             print(
                 "Error connecting to the fallback completions endpoint: "
-                f"{completion_err.reason}"
+                f"{completion_err}"
             )
             return None
         except Exception as completion_exc:
@@ -920,101 +910,90 @@ Transcript:
             )
             return None
 
-    try:
-        with request.urlopen(req) as response:
-            if response.status == 200:
-                response_data = json.loads(response.read().decode("utf-8"))
-                generated_text = response_data["choices"][0]["message"]["content"]
+    def _save_timestamps(timestamp_lines: list[str]) -> bool:
+        os.makedirs(os.path.dirname(output_timestamps_path), exist_ok=True)
+        with open(output_timestamps_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(timestamp_lines))
+        return True
 
-                generated_text = generated_text.split("</think>")[-1]
-                timestamp_lines = _extract_timestamp_lines(generated_text)
-                if not timestamp_lines:
-                    print("Warning: LLM response did not contain any valid timestamps.")
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(api_url, json=payload) as resp:
+                if resp.status == 200:
+                    response_data = await resp.json()
+                    generated_text = response_data["choices"][0]["message"]["content"]
+
+                    generated_text = generated_text.split("</think>")[-1]
+                    timestamp_lines = _extract_timestamp_lines(generated_text)
+                    if not timestamp_lines:
+                        print("Warning: LLM response did not contain any valid timestamps.")
+                        return False
+
+                    _save_timestamps(timestamp_lines)
+                    print("Timestamp generation successful!")
+                    return True
+                else:
+                    error_body = await resp.text()
+                    print(
+                        f"HTTPError from LLM server at '{api_url}': status={resp.status}"
+                    )
+                    if error_body:
+                        print("Response body snippet:")
+                        print(error_body[:2000])
+
+                    fallback_prompt = system_prompt + "\n\n" + user_prompt
+                    fallback_text = await _fallback_to_completions(session, fallback_prompt)
+                    if fallback_text:
+                        fallback_text = fallback_text.split("</think>")[-1]
+                        timestamp_lines = _extract_timestamp_lines(fallback_text)
+                        if timestamp_lines:
+                            _save_timestamps(timestamp_lines)
+                            print(
+                                "Timestamp generation successful via fallback completions endpoint!"
+                            )
+                            return True
+                        print("Fallback completions response contained no valid timestamp lines.")
+
+                    print("Fallback to completions endpoint failed.")
                     return False
 
-                os.makedirs(os.path.dirname(output_timestamps_path), exist_ok=True)
-                with open(output_timestamps_path, "w", encoding="utf-8") as f:
-                    f.write("\n".join(timestamp_lines))
+        except aiohttp.ClientError as e:
+            print(f"Error connecting to the LLM server at '{api_url}'. Is it running?")
+            print(f"Reason: {e}")
 
-                print("Timestamp generation successful!")
-                return True
-            else:
-                print(f"Error: API returned status code {response.status}")
-                print("Response:", response.read().decode("utf-8"))
-                return False
+            fallback_prompt = system_prompt + "\n\n" + user_prompt
+            fallback_text = await _fallback_to_completions(session, fallback_prompt)
+            if fallback_text:
+                fallback_text = fallback_text.split("</think>")[-1]
+                timestamp_lines = _extract_timestamp_lines(fallback_text)
+                if timestamp_lines:
+                    _save_timestamps(timestamp_lines)
+                    print(
+                        "Timestamp generation successful via fallback completions endpoint!"
+                    )
+                    return True
+                print("Fallback completions response contained no valid timestamp lines.")
 
-    except error.HTTPError as e:
-        error_body = (
-            e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
-        )
-        print(
-            f"HTTPError from LLM server at '{api_url}': status={e.code}, reason={e.reason}"
-        )
-        if error_body:
-            print("Response body snippet:")
-            print(error_body[:2000])
+            return False
+        except Exception as e:
+            print(f"An unexpected error occurred during API call: {e}")
+            fallback_prompt = system_prompt + "\n\n" + user_prompt
+            fallback_text = await _fallback_to_completions(session, fallback_prompt)
+            if fallback_text:
+                fallback_text = fallback_text.split("</think>")[-1]
+                timestamp_lines = _extract_timestamp_lines(fallback_text)
+                if timestamp_lines:
+                    _save_timestamps(timestamp_lines)
+                    print(
+                        "Timestamp generation successful via fallback completions endpoint!"
+                    )
+                    return True
+                print("Fallback completions response contained no valid timestamp lines.")
 
-        fallback_prompt = system_prompt + "\n\n" + user_prompt
-        fallback_text = _fallback_to_completions(fallback_prompt)
-        if fallback_text:
-            fallback_text = fallback_text.split("</think>")[-1]
-            timestamp_lines = _extract_timestamp_lines(fallback_text)
-            if timestamp_lines:
-                os.makedirs(os.path.dirname(output_timestamps_path), exist_ok=True)
-                with open(output_timestamps_path, "w", encoding="utf-8") as f:
-                    f.write("\n".join(timestamp_lines))
-
-                print(
-                    "Timestamp generation successful via fallback completions endpoint!"
-                )
-                return True
-            print("Fallback completions response contained no valid timestamp lines.")
-
-        print("Fallback to completions endpoint failed.")
-        return False
-    except error.URLError as e:
-        print(f"Error connecting to the LLM server at '{api_url}'. Is it running?")
-        print(f"Reason: {e.reason}")
-
-        fallback_prompt = system_prompt + "\n\n" + user_prompt
-        fallback_text = _fallback_to_completions(fallback_prompt)
-        if fallback_text:
-            fallback_text = fallback_text.split("</think>")[-1]
-            timestamp_lines = _extract_timestamp_lines(fallback_text)
-            if timestamp_lines:
-                os.makedirs(os.path.dirname(output_timestamps_path), exist_ok=True)
-                with open(output_timestamps_path, "w", encoding="utf-8") as f:
-                    f.write("\n".join(timestamp_lines))
-
-                print(
-                    "Timestamp generation successful via fallback completions endpoint!"
-                )
-                return True
-            print("Fallback completions response contained no valid timestamp lines.")
-
-        return False
-    except Exception as e:
-        print(f"An unexpected error occurred during API call: {e}")
-        fallback_prompt = system_prompt + "\n\n" + user_prompt
-        fallback_text = _fallback_to_completions(fallback_prompt)
-        if fallback_text:
-            fallback_text = fallback_text.split("</think>")[-1]
-            timestamp_lines = _extract_timestamp_lines(fallback_text)
-            if timestamp_lines:
-                os.makedirs(os.path.dirname(output_timestamps_path), exist_ok=True)
-                with open(output_timestamps_path, "w", encoding="utf-8") as f:
-                    f.write("\n".join(timestamp_lines))
-
-                print(
-                    "Timestamp generation successful via fallback completions endpoint!"
-                )
-                return True
-            print("Fallback completions response contained no valid timestamp lines.")
-
-        return False
+            return False
 
 
-def generate_chapter_embeddings(
+async def generate_chapter_embeddings(
     video_hash: str,
     summary_json_path: str,
     chapter_transcripts_dir: str,
@@ -1056,6 +1035,10 @@ def generate_chapter_embeddings(
 
     success = True
     print(f"\nGenerating embeddings for {len(summaries)} chapter(s)...")
+
+    client = openai.AsyncOpenAI(
+        base_url=api_url.rsplit("/embeddings", 1)[0], api_key="empty"
+    )
 
     for idx, chapter in enumerate(summaries, 1):
         print(f"\n--- Chapter {idx} ---")
@@ -1128,37 +1111,37 @@ def generate_chapter_embeddings(
 
         try:
             print(f"  Calling embedding API at {api_url}...")
-            client = openai.OpenAI(
-                base_url=api_url.rsplit("/embeddings", 1)[0], api_key="empty"
-            )
-
-            response = client.embeddings.create(model=model_name, input=combined_text)
+            response = await client.embeddings.create(model=model_name, input=combined_text)
 
             embedding_vector = response.data[0].embedding
             print(
                 f"  Embedding received: dim={len(embedding_vector)}, first 5 values={embedding_vector[:5]}"
             )
 
-            # Store to Postgres
+            # Store to Postgres (sync psycopg, run in thread)
             print(
                 f"  Inserting into DB: video_hash={video_hash}, chapter_path={chapter_rel_path}"
             )
-            with psycopg.connect(db_conn_str, autocommit=True) as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        INSERT INTO chapter_embeddings (video_hash, chapter_path, model_name, embedding)
-                        VALUES (%s, %s, %s, %s::vector)
-                        ON CONFLICT (video_hash, chapter_path, model_name) 
-                        DO UPDATE SET embedding = EXCLUDED.embedding
-                        """,
-                        (
-                            video_hash,
-                            chapter_rel_path,
-                            model_name,
-                            embedding_vector,
-                        ),
-                    )
+
+            def _db_insert():
+                with psycopg.connect(db_conn_str, autocommit=True) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            INSERT INTO chapter_embeddings (video_hash, chapter_path, model_name, embedding)
+                            VALUES (%s, %s, %s, %s::vector)
+                            ON CONFLICT (video_hash, chapter_path, model_name) 
+                            DO UPDATE SET embedding = EXCLUDED.embedding
+                            """,
+                            (
+                                video_hash,
+                                chapter_rel_path,
+                                model_name,
+                                embedding_vector,
+                            ),
+                        )
+
+            await asyncio.to_thread(_db_insert)
             print(
                 f"  ✓ Saved '{model_name}' embedding for Chapter {idx}: '{chapter_title}'"
             )
@@ -1175,7 +1158,7 @@ def generate_chapter_embeddings(
     return success
 
 
-def main():
+async def main():
     """Main function to parse arguments and run the pipeline."""
     parser = argparse.ArgumentParser(
         description="A pipeline to convert video(s) to audio, transcribe, and generate timestamps.",
@@ -1217,7 +1200,7 @@ def main():
         )
 
     # Helper to run the pipeline for one video file
-    def process_video(video_path: str) -> None:
+    async def process_video(video_path: str) -> None:
         print(f"\nComputing SHA-256 hash for {video_path}...")
         sha256_hash = hashlib.sha256()
         try:
@@ -1280,8 +1263,6 @@ def main():
             print(f"Copying source video to output directory...")
             shutil.copy2(video_path, copied_video_path)
 
-        # Optional: We could point `video_path` to `copied_video_path` so subsequent tools use the local copy, but the original is fine.
-
         out_audio = os.path.join(video_out_dir, "audio.mp3")
         out_transcript = os.path.join(video_out_dir, "full_transcript.vtt")
         out_timestamps = os.path.join(video_out_dir, "timestamps.txt")
@@ -1291,79 +1272,82 @@ def main():
 
         print(f"Processing video into: {video_out_dir}")
 
-        # Start extracting frames in the background
-        with ThreadPoolExecutor(max_workers=2) as pipeline_executor:
-            frames_future = pipeline_executor.submit(
-                _extract_all_scene_frames, video_path, frames_dir
+        # Start extracting frames in the background as a concurrent task
+        frames_task = asyncio.create_task(
+            _extract_all_scene_frames(video_path, frames_dir)
+        )
+
+        transcript_exists = os.path.exists(out_transcript)
+
+        if transcript_exists:
+            print(
+                f"Transcript already exists at '{out_transcript}'. "
+                "Skipping audio conversion and transcription."
             )
-
-            transcript_exists = os.path.exists(out_transcript)
-
-            if transcript_exists:
+            if not os.path.exists(out_audio):
                 print(
-                    f"Transcript already exists at '{out_transcript}'. "
-                    "Skipping audio conversion and transcription."
+                    f"Note: MP3 file '{out_audio}' is missing. Continuing with existing transcript."
                 )
-                if not os.path.exists(out_audio):
-                    print(
-                        f"Note: MP3 file '{out_audio}' is missing. Continuing with existing transcript."
-                    )
+        else:
+            if os.path.exists(out_audio):
+                print(f"Existing MP3 found at '{out_audio}'. Skipping conversion.")
             else:
-                if os.path.exists(out_audio):
-                    print(f"Existing MP3 found at '{out_audio}'. Skipping conversion.")
-                else:
-                    print("-" * 20)
-                    if not convert_video_to_mp3(video_path, out_audio):
-                        print("Pipeline stopped at video-to-MP3 conversion.")
-                        return
-
                 print("-" * 20)
-                if not transcribe_audio_with_whisper(out_audio, out_transcript):
-                    print("Pipeline stopped at audio transcription.")
+                if not await convert_video_to_mp3(video_path, out_audio):
+                    print("Pipeline stopped at video-to-MP3 conversion.")
+                    frames_task.cancel()
                     return
 
-            # 3. Generate timestamps from text
             print("-" * 20)
-            if not generate_timestamps_with_llm(out_transcript, out_timestamps):
-                print("Pipeline stopped at timestamp generation.")
+            if not await transcribe_audio_with_whisper(out_audio, out_transcript):
+                print("Pipeline stopped at audio transcription.")
+                frames_task.cancel()
                 return
 
-            # 4. Split transcript into chapter-specific files
-            print("-" * 20)
-            if not split_transcript_by_timestamps(
-                out_transcript, out_timestamps, chapter_dir
-            ):
-                print("Pipeline stopped at transcript splitting.")
-                return
+        # 3. Generate timestamps from text
+        print("-" * 20)
+        if not await generate_timestamps_with_llm(out_transcript, out_timestamps):
+            print("Pipeline stopped at timestamp generation.")
+            frames_task.cancel()
+            return
 
-            # 5. Wait for frames
-            print("-" * 20)
-            print("Waiting for background frame extraction to complete...")
-            try:
-                frames_meta = frames_future.result()
-            except Exception as e:
-                print(f"Pipeline stopped: Frame extraction failed with error: {e}")
-                return
+        # 4. Split transcript into chapter-specific files
+        print("-" * 20)
+        if not split_transcript_by_timestamps(
+            out_transcript, out_timestamps, chapter_dir
+        ):
+            print("Pipeline stopped at transcript splitting.")
+            frames_task.cancel()
+            return
 
-            # 6. Summarize each chapter with the LLM and write JSON output
-            print("-" * 20)
-            if not summarize_chapters_with_llm(
-                out_timestamps,
-                frames_meta,
-                chapter_dir,
-                summary_json_path,
-            ):
-                print("Pipeline stopped at chapter summarization.")
-                return
+        # 5. Wait for frames
+        print("-" * 20)
+        print("Waiting for background frame extraction to complete...")
+        try:
+            frames_meta = await frames_task
+        except Exception as e:
+            print(f"Pipeline stopped: Frame extraction failed with error: {e}")
+            return
 
-            # 7. Generate Nemotron Embeddings for semantic search
-            print("-" * 20)
-            if not generate_chapter_embeddings(
-                video_hash, summary_json_path, chapter_dir, conn_str
-            ):
-                print(
-                    "Warning: Chapter embedding generation encountered errors, but continuing to finalize."
-                )
+        # 6. Summarize each chapter with the LLM and write JSON output
+        print("-" * 20)
+        if not await summarize_chapters_with_llm(
+            out_timestamps,
+            frames_meta,
+            chapter_dir,
+            summary_json_path,
+        ):
+            print("Pipeline stopped at chapter summarization.")
+            return
+
+        # 7. Generate Nemotron Embeddings for semantic search
+        print("-" * 20)
+        if not await generate_chapter_embeddings(
+            video_hash, summary_json_path, chapter_dir, conn_str
+        ):
+            print(
+                "Warning: Chapter embedding generation encountered errors, but continuing to finalize."
+            )
 
         # 8. Mark as complete in database
         try:
@@ -1428,15 +1412,15 @@ def main():
             return
 
         for vid in videos:
-            process_video(vid)
+            await process_video(vid)
 
     # If a single input file is provided, process it
     if input_file:
         if not os.path.isfile(input_file):
             print(f"Error: input file not found at '{input_file}'")
             return
-        process_video(input_file)
+        await process_video(input_file)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

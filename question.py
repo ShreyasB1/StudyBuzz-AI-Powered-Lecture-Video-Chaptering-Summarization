@@ -6,15 +6,15 @@ Flow:
   2. Retrieve the top-k chapter embeddings from pgvector.
   3. For each result, read the chapter transcript + summary and send it
      to the LLM (Mistral on port 8000) with the question, asking it to
-     extract only the relevant information.
+     extract only the relevant information.  (All k requests run concurrently.)
   4. Collect all per-chapter LLM responses and send them as combined
      context in one final LLM request to produce the answer.
 """
 
 import argparse
+import asyncio
 import json
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import openai
 import psycopg
@@ -100,66 +100,73 @@ def _load_chapter_content(folder_path: str, chapter_path: str) -> str:
 # ---------------------------------------------------------------------------
 # Core pipeline
 # ---------------------------------------------------------------------------
-def search_top_k(query: str, limit: int = 5) -> list[dict]:
+async def search_top_k(query: str, limit: int = 5) -> list[dict]:
     """Return the top-k chapter matches with metadata + on-disk content."""
 
     # 1. Generate query embedding
     print(f"Generating embedding for: '{query}'...")
-    client = openai.OpenAI(base_url=EMBED_BASE_URL, api_key="empty")
-    response = client.embeddings.create(model=EMBED_MODEL, input=query)
+    client = openai.AsyncOpenAI(base_url=EMBED_BASE_URL, api_key="empty")
+    response = await client.embeddings.create(model=EMBED_MODEL, input=query)
     query_vector = response.data[0].embedding
 
-    # 2. Query pgvector
+    # 2. Query pgvector (psycopg is sync; run in a thread to avoid blocking)
     print("Searching database...")
     results: list[dict] = []
-    with psycopg.connect(_get_db_conn_str()) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT c.video_hash, v.video_name, v.folder_path,
-                       c.chapter_path,
-                       1 - (c.embedding <=> %s::vector) AS similarity
-                FROM chapter_embeddings c
-                JOIN lecture_videos v ON c.video_hash = v.video_hash
-                ORDER BY c.embedding <=> %s::vector
-                LIMIT %s;
-                """,
-                (query_vector, query_vector, limit),
-            )
-            for row in cur.fetchall():
-                video_hash, video_name, folder_path, chapter_path, similarity = row
-                content = _load_chapter_content(folder_path, chapter_path)
-                results.append(
-                    {
-                        "video_name": video_name,
-                        "chapter_path": chapter_path,
-                        "similarity": similarity,
-                        "content": content,
-                    }
+
+    def _db_query():
+        rows = []
+        with psycopg.connect(_get_db_conn_str()) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT c.video_hash, v.video_name, v.folder_path,
+                           c.chapter_path,
+                           1 - (c.embedding <=> %s::vector) AS similarity
+                    FROM chapter_embeddings c
+                    JOIN lecture_videos v ON c.video_hash = v.video_hash
+                    ORDER BY c.embedding <=> %s::vector
+                    LIMIT %s;
+                    """,
+                    (query_vector, query_vector, limit),
                 )
+                rows = cur.fetchall()
+        return rows
+
+    rows = await asyncio.to_thread(_db_query)
+    for row in rows:
+        video_hash, video_name, folder_path, chapter_path, similarity = row
+        content = _load_chapter_content(folder_path, chapter_path)
+        results.append(
+            {
+                "video_name": video_name,
+                "chapter_path": chapter_path,
+                "similarity": similarity,
+                "content": content,
+            }
+        )
 
     print(f"Found {len(results)} result(s).\n")
     return results
 
 
-def ask_llm(messages: list[dict]) -> str:
+async def ask_llm(messages: list[dict]) -> str:
     """Send a chat-completion request to the local Mistral LLM."""
-    client = openai.OpenAI(base_url=LLM_BASE_URL, api_key="empty")
-    response = client.chat.completions.create(model=LLM_MODEL, messages=messages)
+    client = openai.AsyncOpenAI(base_url=LLM_BASE_URL, api_key="empty")
+    response = await client.chat.completions.create(model=LLM_MODEL, messages=messages)
     raw = response.choices[0].message.content or ""
     return _strip_think_tags(raw)
 
 
-def answer_question(query: str, top_k: int = 5) -> str:
+async def answer_question(query: str, top_k: int = 5) -> str:
     """Full multi-hop pipeline: search → per-result extraction → synthesis."""
 
     # Step 1 – Retrieve
-    results = search_top_k(query, limit=top_k)
+    results = await search_top_k(query, limit=top_k)
     if not results:
         return "No relevant chapters found in the database."
 
-    # Step 2 – Per-result LLM extraction (parallelised)
-    def _extract(i: int, result: dict) -> tuple[int, str]:
+    # Step 2 – Per-result LLM extraction (all k requests run concurrently)
+    async def _extract(i: int, result: dict) -> tuple[int, str]:
         """Send one chapter to the LLM and return (index, extraction_text)."""
         print(f"[{i}/{len(results)}] Extracting from: {result['chapter_path']} "
               f"(similarity {result['similarity']:.4f})...")
@@ -186,7 +193,7 @@ def answer_question(query: str, top_k: int = 5) -> str:
         ]
 
         try:
-            extraction = ask_llm(messages)
+            extraction = await ask_llm(messages)
             print(f"  ✓ [{i}] Got extraction ({len(extraction)} chars)")
             return (
                 i,
@@ -200,18 +207,12 @@ def answer_question(query: str, top_k: int = 5) -> str:
                 f"Source {i} ({result['video_name']}): [error retrieving extraction]",
             )
 
-    with ThreadPoolExecutor(max_workers=len(results)) as executor:
-        futures = {
-            executor.submit(_extract, i, result): i
-            for i, result in enumerate(results, 1)
-        }
-        extraction_map: dict[int, str] = {}
-        for future in as_completed(futures):
-            idx, text = future.result()
-            extraction_map[idx] = text
+    extraction_results = await asyncio.gather(
+        *[_extract(i, result) for i, result in enumerate(results, 1)]
+    )
 
-    # Reassemble in original ranking order
-    extractions = [extraction_map[i] for i in sorted(extraction_map)]
+    # Reassemble in original ranking order (gather preserves input order)
+    extractions = [text for _, text in extraction_results]
 
     # Step 3 – Final synthesis
     print("\nSynthesizing final answer...")
@@ -238,7 +239,7 @@ def answer_question(query: str, top_k: int = 5) -> str:
         },
     ]
 
-    answer = ask_llm(final_messages)
+    answer = await ask_llm(final_messages)
     return answer
 
 
@@ -259,7 +260,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     print("=" * 60)
-    answer = answer_question(args.query, top_k=args.top_k)
+    answer = asyncio.run(answer_question(args.query, top_k=args.top_k))
     print("=" * 60)
     print("\nFinal Answer:\n")
     print(answer)
