@@ -36,6 +36,14 @@
     .dot.red { background: #c5221f; }
     .dot.gray { background: #999; }
     .log-viewer { background: #1e1e1e; color: #d4d4d4; padding: 1rem; border-radius: 4px; font-family: monospace; font-size: 0.75rem; max-height: 300px; overflow-y: auto; white-space: pre-wrap; margin-top: 0.5rem; }
+    .gpu-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.75rem; margin-top: 0.75rem; }
+    .gpu-card { background: #f0f4ff; border-radius: 6px; padding: 0.75rem; font-size: 0.8rem; }
+    .gpu-card .gpu-id { font-weight: 700; color: #003057; margin-bottom: 0.35rem; }
+    .gpu-bar-wrap { background: #d0d8e8; border-radius: 3px; height: 8px; margin: 0.2rem 0; overflow: hidden; }
+    .gpu-bar { height: 100%; border-radius: 3px; transition: width 0.4s; }
+    .gpu-bar.mem { background: #003057; }
+    .gpu-bar.util { background: #137333; }
+    .gpu-label { color: #555; display: flex; justify-content: space-between; }
   </style>
 </head>
 <body>
@@ -47,6 +55,12 @@
       <h2>Service Health</h2>
       <button onclick="checkHealth()">Check Status</button>
       <div id="health"></div>
+    </div>
+
+    <div class="card">
+      <h2>GPU Status</h2>
+      <button onclick="fetchGpuStatus()">Refresh GPUs</button>
+      <div id="gpuStatus"></div>
     </div>
 
     <div class="card">
@@ -247,7 +261,45 @@
       }
     }
 
+    async function fetchGpuStatus() {
+      const el = document.getElementById('gpuStatus');
+      el.innerHTML = '<span style="color:#999;font-size:0.85rem">Fetching GPU data...</span>';
+      try {
+        const res = await fetch(api('/api/gpu-status'));
+        const data = await res.json();
+        if (data.error) {
+          el.innerHTML = '<div class="status warn" style="margin-top:0.5rem">' + data.error + '</div>';
+          return;
+        }
+        if (!data.gpus || !data.gpus.length) {
+          el.innerHTML = '<div class="status warn" style="margin-top:0.5rem">No GPUs detected.</div>';
+          return;
+        }
+        let html = '<div class="gpu-grid">';
+        data.gpus.forEach(function(g) {
+          const memColor = g.memory_pct > 90 ? '#c5221f' : g.memory_pct > 70 ? '#e37400' : '#003057';
+          const utilColor = g.utilization_pct > 80 ? '#137333' : g.utilization_pct > 30 ? '#e37400' : '#999';
+          html += '<div class="gpu-card">'
+            + '<div class="gpu-id">GPU ' + g.index + '</div>'
+            + '<div style="color:#555;font-size:0.72rem;margin-bottom:0.35rem">' + g.name + '</div>'
+            + '<div class="gpu-label"><span>VRAM</span><span style="color:' + memColor + '">' + g.memory_pct + '% (' + Math.round(g.memory_used_mb/1024) + '/' + Math.round(g.memory_total_mb/1024) + ' GB)</span></div>'
+            + '<div class="gpu-bar-wrap"><div class="gpu-bar mem" style="width:' + Math.min(g.memory_pct,100) + '%;background:' + memColor + '"></div></div>'
+            + '<div class="gpu-label" style="margin-top:0.25rem"><span>Compute</span><span style="color:' + utilColor + '">' + g.utilization_pct + '%</span></div>'
+            + '<div class="gpu-bar-wrap"><div class="gpu-bar util" style="width:' + Math.min(g.utilization_pct,100) + '%;background:' + utilColor + '"></div></div>'
+            + '<div style="color:#888;font-size:0.7rem;margin-top:0.35rem">' + g.temperature_c + '°C</div>'
+            + '</div>';
+        });
+        html += '</div>';
+        html += '<div style="font-size:0.75rem;color:#888;margin-top:0.5rem">'
+          + data.count + ' GPU(s) &mdash; last checked: ' + new Date().toLocaleTimeString() + '</div>';
+        el.innerHTML = html;
+      } catch (e) {
+        el.innerHTML = '<div class="status error" style="margin-top:0.5rem">Error: ' + e.message + '</div>';
+      }
+    }
+
     autoCheckHealth();
+    fetchGpuStatus();
   </script>
 </body>
 </html>
