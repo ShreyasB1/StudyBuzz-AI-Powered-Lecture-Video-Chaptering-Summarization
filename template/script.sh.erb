@@ -139,7 +139,10 @@ if [ ${PG_ELAPSED} -ge ${PG_TIMEOUT} ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Start the StudyBuzz Flask container (no GPU needed)
+# Start the StudyBuzz Flask container
+# --device gives read-only visibility of GPUs so nvidia-smi can report
+# status from the web UI. It does NOT allocate VRAM — the vLLM containers
+# control their own GPU memory via --gpu-memory-utilization.
 # ---------------------------------------------------------------------------
 echo "TIMING - Starting StudyBuzz container at: $(date)"
 
@@ -147,6 +150,8 @@ podman run -d \
   --pod "${POD_NAME}" \
   --name "studybuzz-app-${SLURM_JOB_ID}" \
   --restart unless-stopped \
+  --device nvidia.com/gpu=all \
+  --security-opt=label=disable \
   -e VIP_DB_HOST=host.containers.internal \
   -v "${UPLOADS_DIR}:/app/uploads:Z" \
   -v "${OUTPUT_DIR}:/app/output:Z" \
