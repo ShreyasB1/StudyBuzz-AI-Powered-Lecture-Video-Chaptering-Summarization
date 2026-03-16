@@ -14,6 +14,8 @@ import urllib.request
 import urllib.error
 import psycopg
 from init_db import DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT
+from search import search_chapters
+import base64
 
 BASE_DIR = Path(__file__).parent.absolute()
 STATIC_DIR = BASE_DIR / "static"
@@ -462,6 +464,149 @@ def list_jobs():
         200,
     )
 
+
+@app.route("/api/ask", methods=["POST"])
+def ask_question():
+    """
+    Endpoint for a conversational Q&A. 
+    1. Uses `search_chapters` to embed and find top 3 matches.
+    2. Retrieves transcripts and frames from those chapters.
+    3. Sends them to Mistral to generate a localized answer.
+    """
+    data = request.get_json()
+    if not data or "question" not in data:
+        return jsonify({"error": "Missing 'question' in request body"}), 400
+
+    question = data["question"]
+    db_conn_str = f"dbname={DB_NAME} user={DB_USER} password={DB_PASSWORD} host={DB_HOST} port={DB_PORT}"
+
+    # 1/2. Use existing search.py function to embed and fetch top chapters
+    try:
+        top_matches = search_chapters(question, limit=3)
+    except Exception as e:
+        return jsonify({"error": f"Search failed: {e}"}), 500
+
+    if not top_matches:
+        return jsonify({"answer": "I couldn't find any relevant information in the uploaded lectures to answer your question."})
+
+    # 3. Retrieve transcripts and frames for those top chapters
+    context_text = ""
+    messages_content = []
+
+    # The prompt instructing Mistral what to do
+    messages_content.append({
+        "type": "text",
+        "text": (
+            "You are StudyBuzz, an AI teaching assistant. Based ONLY on the following lecture transcripts and images, "
+            "provide a concise answer to the student's question. If the answer is not in "
+            f"the provided context, say 'I cannot answer this based on the lecture material.'\n\nStudent's Question: {question}\n\n"
+        )
+    })
+
+    sources = []
+    for match in top_matches:
+        video_hash = match["video_hash"]
+        video_name = match["video_name"]
+        chapter_path = match["chapter_path"]
+        similarity = match["similarity"]
+        
+        # Ensure we construct the absolute path correctly based on the relative path saved in the DB
+        # Note: In timeStampGen.py, it's saved as f"{video_hash}/chapter_0X_title"
+        chapter_dir = OUTPUT_FOLDER / chapter_path
+        transcript_file = chapter_dir / "transcript.vtt"
+        frames_dir = chapter_dir / "frames"
+
+        transcript_text = ""
+        if transcript_file.exists():
+            # Grab just the plain text (no VTT headers/timestamps to save tokens)
+            raw_vtt = transcript_file.read_text(encoding="utf-8")
+            lines = [l.strip() for l in raw_vtt.splitlines() if l.strip() and not l.startswith("WEBVTT") and "-->" not in l]
+            transcript_text = "\n".join(lines)
+        
+        context_text += f"\n--- Source: {video_name} (Relevant Chapter) ---\n{transcript_text}\n"
+
+        sources.append({
+            "video_name": video_name,
+            "chapter_path": chapter_path, # useful if you want a button to click and jump to this chapter
+            "similarity_score": round(similarity, 3)
+        })
+
+        # Append all extracted scene-change frames from this chapter
+        if frames_dir.exists():
+            frame_files = sorted(frames_dir.glob("*.png"))
+            for frame_file in frame_files:
+                with open(frame_file, "rb") as f:
+                    frame_b64 = base64.b64encode(f.read()).decode("utf-8")
+                    messages_content.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{frame_b64}"}
+                    })
+
+    # Add the text context we built to the message payload
+    messages_content.append({"type": "text", "text": f"\nLecture Transcripts:\n{context_text}"})
+
+    payload = {
+        "model": "mistral-large",
+        "messages": [{"role": "user", "content": messages_content}],
+        "temperature": 0.3
+    }
+
+    # 4. Generate Answer via Mistral
+    try:
+        req = urllib.request.Request(
+            "http://localhost:8000/v1/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req) as response:
+            response_data = json.loads(response.read().decode("utf-8"))
+            answer_text = response_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            # mistral can output thoughts wrapped in <think>, so strip them.
+            answer_text = answer_text.split("</think>")[-1].strip()
+    except Exception as e:
+         return jsonify({"error": f"Failed to generate answer from Mistral: {e}"}), 500
+
+    return jsonify({
+        "answer": answer_text,
+        "sources": sources
+    }), 200
+
+@app.route("/api/search", methods=["POST"])
+def search_endpoint():
+    """
+    Endpoint for purely matching a query to video chapters.
+    Returns the top N matching chapters without passing them through Mistral for a combined answer.
+    """
+    data = request.get_json()
+    if not data or "query" not in data:
+        return jsonify({"error": "Missing 'query' in request body"}), 400
+
+    query = data["query"]
+    limit = data.get("limit", 5)
+    
+    try:
+        limit = int(limit)
+    except ValueError:
+        limit = 5
+
+    try:
+        top_matches = search_chapters(query, limit=limit)
+    except Exception as e:
+        return jsonify({"error": f"Search failed: {e}"}), 500
+
+    results = []
+    for match in top_matches:
+        results.append({
+            "video_hash": match["video_hash"],
+            "video_name": match["video_name"],
+            "chapter_path": match["chapter_path"],
+            "similarity_score": round(match["similarity"], 4)
+        })
+
+    return jsonify({
+        "query": query,
+        "results": results
+    }), 200
 
 @app.route("/api/log/<job_id>", methods=["GET"])
 def get_pipeline_log(job_id):

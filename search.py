@@ -5,7 +5,13 @@ from init_db import DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT
 
 
 def search_chapters(query_text: str, limit: int = 5):
+    """
+    Search for chapters matching the query_text.
+    Returns a list of dicts:
+    [{"video_hash": ..., "video_name": ..., "chapter_path": ..., "similarity": ...}]
+    """
     db_conn_str = f"dbname={DB_NAME} user={DB_USER} password={DB_PASSWORD} host={DB_HOST} port={DB_PORT}"
+    results_list = []
 
     # 1. Generate the query embedding
     print(f"Generating embedding for query: '{query_text}'...")
@@ -16,7 +22,7 @@ def search_chapters(query_text: str, limit: int = 5):
     except Exception as e:
         print(f"Error generating query embedding: {e}")
         print("Make sure the Nemotron embedder container is running on port 8002.")
-        return
+        return results_list
 
     # 2. Query Postgres for closest semantic matches
     print("Searching database for semantic matches...")
@@ -39,18 +45,27 @@ def search_chapters(query_text: str, limit: int = 5):
 
                 if not results:
                     print("No chapters found in the database.")
-                    return
+                    return results_list
 
                 print("\n--- Top Search Results ---")
                 for i, row in enumerate(results, 1):
                     video_hash, video_name, chapter_path, similarity = row
+                    results_list.append({
+                        "video_hash": video_hash,
+                        "video_name": video_name,
+                        "chapter_path": chapter_path,
+                        "similarity": similarity
+                    })
                     print(f"{i}. Video: {video_name} (Score: {similarity:.4f})")
                     print(f"   Chapter Path: {chapter_path}")
                     print(f"   Video Hash:   {video_hash}")
                     print()
+                
+                return results_list
 
     except Exception as e:
         print(f"Database error during search: {e}")
+        return results_list
 
 
 if __name__ == "__main__":
