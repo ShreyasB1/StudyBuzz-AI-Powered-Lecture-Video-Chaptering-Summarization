@@ -33,8 +33,8 @@ EMBED_MODEL = "nemotron"
 LLM_BASE_URL = "http://localhost:8000/v1"
 LLM_MODEL = "mistral-large"
 
-TOP_K_PER_QUERY = 4  # results per sub-query (kept small to avoid flooding)
-MAX_SUB_QUERIES = 10  # cap on sub-queries the planner can emit
+TOP_K_PER_QUERY = 3  # results per sub-query (kept small to avoid flooding)
+MAX_SUB_QUERIES = 5  # cap on sub-queries the planner can emit
 
 
 # ---------------------------------------------------------------------------
