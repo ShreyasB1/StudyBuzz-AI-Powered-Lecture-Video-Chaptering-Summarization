@@ -33,8 +33,8 @@ EMBED_MODEL = "nemotron"
 LLM_BASE_URL = "http://localhost:8000/v1"
 LLM_MODEL = "mistral-large"
 
-TOP_K_PER_QUERY = 3  # results per sub-query (kept small to avoid flooding)
-MAX_SUB_QUERIES = 5  # cap on sub-queries the planner can emit
+TOP_K_PER_QUERY = 4  # results per sub-query (kept small to avoid flooding)
+MAX_SUB_QUERIES = 10  # cap on sub-queries the planner can emit
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +210,7 @@ async def plan_queries(question: str) -> list[str]:
 
 
 async def multi_search(queries: list[str], top_k: int = TOP_K_PER_QUERY) -> list[dict]:
-    """Run all sub-queries concurrently, deduplicate by chapter_path, aggregate queries, 
+    """Run all sub-queries concurrently, deduplicate by chapter_path, aggregate queries,
     and keep the best similarity score."""
     print(f"\n📚 Searching {len(queries)} sub-queries (top-{top_k} each)...")
 
@@ -223,7 +223,7 @@ async def multi_search(queries: list[str], top_k: int = TOP_K_PER_QUERY) -> list
         current_query = queries[batch_idx]
         for result in batch:
             key = result["chapter_path"]
-            
+
             if key not in seen:
                 # First time seeing this chapter: initialize the list
                 result["matched_queries"] = [current_query]
@@ -232,14 +232,16 @@ async def multi_search(queries: list[str], top_k: int = TOP_K_PER_QUERY) -> list
                 # Chapter already seen: append the new query if it's unique
                 if current_query not in seen[key]["matched_queries"]:
                     seen[key]["matched_queries"].append(current_query)
-                
+
                 # Update to the highest similarity score if this match was stronger
                 if result["similarity"] > seen[key]["similarity"]:
                     seen[key]["similarity"] = result["similarity"]
 
     deduped = sorted(seen.values(), key=lambda r: r["similarity"], reverse=True)
-    print(f"   Found {sum(len(b) for b in search_results)} results total, "
-          f"{len(deduped)} unique chapters after dedup.\n")
+    print(
+        f"   Found {sum(len(b) for b in search_results)} results total, "
+        f"{len(deduped)} unique chapters after dedup.\n"
+    )
     return deduped
 
 
@@ -248,11 +250,13 @@ async def extract_all(question: str, results: list[dict]) -> list[str]:
 
     async def _extract(i: int, result: dict) -> tuple[int, str]:
         # Format the aggregated queries for logging and prompting
-        focus_list = "\n".join([f"- {q}" for q in result['matched_queries']])
-        log_queries = " | ".join(result['matched_queries'])
-        
-        print(f"[{i}/{len(results)}] Extracting from: {result['chapter_path']} "
-              f"(sim {result['similarity']:.4f}, triggers: [{log_queries}])")
+        focus_list = "\n".join([f"- {q}" for q in result["matched_queries"]])
+        log_queries = " | ".join(result["matched_queries"])
+
+        print(
+            f"[{i}/{len(results)}] Extracting from: {result['chapter_path']} "
+            f"(sim {result['similarity']:.4f}, triggers: [{log_queries}])"
+        )
 
         messages = [
             {
