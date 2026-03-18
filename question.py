@@ -68,6 +68,7 @@ def _load_chapter_content(folder_path: str, chapter_path: str) -> str:
 
     # Summary
     summary_path = os.path.join(chapter_dir, "summary.json")
+    print(f"  Attempting to read summary: {summary_path}")
     if os.path.exists(summary_path):
         try:
             with open(summary_path, "r", encoding="utf-8") as f:
@@ -80,6 +81,7 @@ def _load_chapter_content(folder_path: str, chapter_path: str) -> str:
 
     # Transcript
     transcript_path = os.path.join(chapter_dir, "transcript.vtt")
+    print(f"  Attempting to read transcript: {transcript_path}")
     if os.path.exists(transcript_path):
         try:
             with open(transcript_path, "r", encoding="utf-8") as f:
@@ -194,7 +196,10 @@ async def answer_question(query: str, top_k: int = 5) -> str:
 
         try:
             extraction = await ask_llm(messages)
-            print(f"  ✓ [{i}] Got extraction ({len(extraction)} chars)")
+            print(f"  ✓ [{i}] Got extraction for {result['chapter_path']}:")
+            print(f"--- LLM Response ({result['chapter_path']}) ---")
+            print(extraction)
+            print("-----------------------------------------\n")
             return (
                 i,
                 f"Source {i} ({result['video_name']} – {result['chapter_path']}):\n"
