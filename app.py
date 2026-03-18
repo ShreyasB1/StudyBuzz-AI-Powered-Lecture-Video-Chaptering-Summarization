@@ -404,6 +404,48 @@ def health_check():
     )
 
 
+@app.route("/api/gpu-status", methods=["GET"])
+def gpu_status():
+    """Return live GPU memory and utilization from nvidia-smi."""
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,name,memory.used,memory.free,memory.total,utilization.gpu,temperature.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return jsonify({"error": "nvidia-smi failed", "stderr": result.stderr.strip()}), 500
+
+        gpus = []
+        for line in result.stdout.strip().splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 7:
+                mem_used = int(parts[2])
+                mem_total = int(parts[4])
+                gpus.append(
+                    {
+                        "index": int(parts[0]),
+                        "name": parts[1],
+                        "memory_used_mb": mem_used,
+                        "memory_free_mb": int(parts[3]),
+                        "memory_total_mb": mem_total,
+                        "memory_pct": round(mem_used / mem_total * 100, 1) if mem_total else 0,
+                        "utilization_pct": int(parts[5]),
+                        "temperature_c": int(parts[6]),
+                    }
+                )
+        return jsonify({"gpus": gpus, "count": len(gpus)}), 200
+    except FileNotFoundError:
+        return jsonify({"error": "nvidia-smi not found — not running on a GPU node"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/jobs", methods=["GET"])
 def list_jobs():
     return (

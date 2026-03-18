@@ -18,6 +18,10 @@ else
   podman logs "mistral-vllm-${SLURM_JOB_ID}" 2>&1 | tail -50 || true
   echo "=== Whisper vLLM Logs ==="
   podman logs "whisper-vllm-${SLURM_JOB_ID}" 2>&1 | tail -50 || true
+  echo "=== Nemotron vLLM Logs ==="
+  podman logs "nemotron-vllm-${SLURM_JOB_ID}" 2>&1 | tail -50 || true
+  echo "=== PostgreSQL Logs ==="
+  podman logs "pgvector_local-${SLURM_JOB_ID}" 2>&1 | tail -20 || true
   echo "=== Pod Status ==="
   podman pod ps 2>&1 || true
   podman ps -a 2>&1 || true
