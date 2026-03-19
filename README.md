@@ -332,6 +332,25 @@ A standalone lookup script (`search.py`) is included to query the `chapter_embed
 python search.py "Your question or keyword here" --limit 5
 ```
 
+### Question Answering Tool (Multi-Hop RAG)
+
+`question.py` builds on `search.py` to provide full question-answering over the lecture database using a multi-hop retrieval-augmented generation pipeline:
+
+1. **Search** — Embeds the question via Nemotron and retrieves the top-k chapter matches from pgvector
+2. **Per-result extraction** — Each chapter's transcript + summary is sent to Mistral **in parallel** to extract only the relevant information
+3. **Final synthesis** — All per-chapter extractions are combined as context in one final LLM request to produce a comprehensive, cited answer
+
+```bash
+python question.py "What is gradient descent?" --top-k 5
+```
+
+| Flag | Description |
+|---|---|
+| `query` | The question to ask |
+| `--top-k` | Number of search results to use (default: 5) |
+
+> **Note:** Requires Mistral (port 8000), Nemotron (port 8002), and the pgvector database to be running.
+
 ---
 
 ## Project Structure
@@ -341,6 +360,7 @@ SB-V-1a/
 ├── app.py                      # Flask backend server
 ├── timeStampGen.py             # Main processing pipeline
 ├── search.py                   # CLI semantic search over chapter embeddings
+├── question.py                 # Multi-hop RAG question answering over lectures
 ├── vllm_to_vtt.py              # VTT conversion utility
 ├── init_db.py                  # PostgreSQL database initialization & schema
 ├── bench.py                    # Benchmarking utility

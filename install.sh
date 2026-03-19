@@ -26,7 +26,7 @@ PID_BUILD=$!
 podman pull docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129 &
 PID_PULL_VLLM=$!
 
-podman pull pgvector/pgvector:pg18-trixie &
+podman pull docker.io/pgvector/pgvector:pg18-trixie &
 PID_PULL_DB=$!
 
 # Wait for all background processes to finish
