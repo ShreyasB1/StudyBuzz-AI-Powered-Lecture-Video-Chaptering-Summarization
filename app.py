@@ -17,6 +17,7 @@ from init_db import DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT
 
 BASE_DIR = Path(__file__).parent.absolute()
 STATIC_DIR = BASE_DIR / "static"
+FRONTEND_DIST_DIR = BASE_DIR / "frontend" / "dist"
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 CORS(app, resources={r"/api/*": {"origins": "*"}})
@@ -219,6 +220,46 @@ def list_db_videos():
         return jsonify({"error": f"Database error: {e}"}), 500
 
 
+@app.route("/api/search", methods=["GET"])
+def search_videos():
+    """
+    Simple search endpoint for the React frontend.
+    Returns results with at minimum: id, title, thumbnail_url, duration.
+    """
+    q = (request.args.get("q") or "").strip()
+    if not q:
+        return jsonify({"results": []}), 200
+
+    conn_str = f"dbname={DB_NAME} user={DB_USER} password={DB_PASSWORD} host={DB_HOST} port={DB_PORT}"
+    try:
+        with psycopg.connect(conn_str, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT video_hash, video_name
+                    FROM lecture_videos
+                    WHERE video_name ILIKE %s
+                    ORDER BY video_date DESC
+                    LIMIT 50
+                    """,
+                    (f"%{q}%",),
+                )
+                rows = cur.fetchall()
+
+        results = [
+            {
+                "id": row[0],
+                "title": row[1],
+                "thumbnail_url": "/static/placeholder-thumb.svg",
+                "duration": None,
+            }
+            for row in rows
+        ]
+        return jsonify({"results": results}), 200
+    except Exception as e:
+        return jsonify({"error": f"Database error: {e}"}), 500
+
+
 @app.route("/api/results/hash/<video_hash>", methods=["GET"])
 def get_results_by_hash(video_hash):
     video_out_dir = OUTPUT_FOLDER / video_hash
@@ -273,10 +314,11 @@ def stream_video_by_hash(video_hash):
 
 @app.route("/api/upload", methods=["POST"])
 def upload_video():
-    if "video" not in request.files:
+    # Accept both "file" (React client) and "video" (legacy HTML client)
+    file = request.files.get("file") or request.files.get("video")
+    if not file:
         return jsonify({"error": "No video file provided"}), 400
 
-    file = request.files["video"]
     if file.filename == "":
         return jsonify({"error": "No file selected"}), 400
     if not _allowed_file(file.filename):
@@ -435,7 +477,7 @@ def get_pipeline_log(job_id):
 
 
 # ---------------------------------------------------------------------------
-# Frontend serving (single-page static HTML)
+# Frontend serving
 # ---------------------------------------------------------------------------
 
 
@@ -444,6 +486,15 @@ def get_pipeline_log(job_id):
 def serve_frontend(path):
     if path.startswith("api/"):
         return jsonify({"error": "API endpoint not found"}), 404
+
+    # Prefer React build if present (Vite outputs assets under dist/).
+    if FRONTEND_DIST_DIR.exists():
+        requested = FRONTEND_DIST_DIR / path if path else None
+        if path and requested and requested.exists():
+            return send_from_directory(str(FRONTEND_DIST_DIR), path)
+        return send_from_directory(str(FRONTEND_DIST_DIR), "index.html")
+
+    # Fallback to legacy static HTML if React isn't built yet.
     if path and (STATIC_DIR / path).exists():
         return send_from_directory(str(STATIC_DIR), path)
     return send_from_directory(str(STATIC_DIR), "index.html")
