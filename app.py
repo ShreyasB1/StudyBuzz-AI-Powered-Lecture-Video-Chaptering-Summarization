@@ -18,6 +18,57 @@ from init_db import DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT
 BASE_DIR = Path(__file__).parent.absolute()
 STATIC_DIR = BASE_DIR / "static"
 FRONTEND_DIST_DIR = BASE_DIR / "frontend" / "dist"
+FRONTEND_DIR = BASE_DIR / "frontend"
+
+
+def ensure_frontend_built():
+    """
+    Ensure the React/Vite frontend build exists so `/` can be served as React.
+
+    If `frontend/dist` is missing, we try to run:
+      - `npm install` (only if `frontend/node_modules` is missing)
+      - `npm run build`
+
+    This lets you run everything via `python3 app.py` without manual frontend steps.
+    """
+    if FRONTEND_DIST_DIR.exists():
+        return
+
+    # Allow disabling auto-build (useful if you don't want npm/network access).
+    if os.getenv("BUILD_FRONTEND", "1").lower() in {"0", "false", "no"}:
+        print("[Frontend] Skipping auto-build (BUILD_FRONTEND=0). Falling back to legacy static HTML.")
+        return
+
+    if not FRONTEND_DIR.exists():
+        print("[Frontend] Frontend directory missing; falling back to legacy static HTML.")
+        return
+
+    try:
+        subprocess.run(["npm", "--version"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        print(f"[Frontend] npm is not available; cannot build frontend automatically. Error: {e}")
+        return
+
+    try:
+        if not (FRONTEND_DIR / "node_modules").exists():
+            print("[Frontend] Installing frontend dependencies (npm install)...")
+            subprocess.run(
+                ["npm", "install"],
+                cwd=str(FRONTEND_DIR),
+                check=True,
+            )
+
+        print("[Frontend] Building frontend (npm run build)...")
+        subprocess.run(
+            ["npm", "run", "build"],
+            cwd=str(FRONTEND_DIR),
+            check=True,
+        )
+
+        if not FRONTEND_DIST_DIR.exists():
+            print("[Frontend] Build finished but dist/ is still missing. Falling back to legacy static HTML.")
+    except Exception as e:
+        print(f"[Frontend] Auto-build failed; falling back to legacy static HTML. Error: {e}")
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 CORS(app, resources={r"/api/*": {"origins": "*"}})
@@ -51,6 +102,9 @@ UPLOAD_FOLDER.mkdir(exist_ok=True)
 OUTPUT_FOLDER.mkdir(exist_ok=True)
 
 jobs = {}
+
+# Build frontend at startup so `/` can serve React without extra commands.
+ensure_frontend_built()
 
 
 def _allowed_file(filename):

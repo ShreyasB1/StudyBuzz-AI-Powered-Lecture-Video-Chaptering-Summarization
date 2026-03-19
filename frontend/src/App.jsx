@@ -1,6 +1,7 @@
 import React from 'react';
 import VideoUploadCard from './components/VideoUploadCard.jsx';
 import VideoSearchCard from './components/VideoSearchCard.jsx';
+import GpuStatusCard from './components/GpuStatusCard.jsx';
 
 export default function App() {
   return (
@@ -8,7 +9,7 @@ export default function App() {
       <h1>StudyBuzz</h1>
       <p className="subtitle">AI-Powered Lecture Video Chaptering &amp; Summarization</p>
 
-      {/* Keeping layout minimal and pixel-stable; existing static features can be re-added as needed */}
+      <GpuStatusCard />
       <VideoUploadCard />
       <VideoSearchCard />
     </div>
