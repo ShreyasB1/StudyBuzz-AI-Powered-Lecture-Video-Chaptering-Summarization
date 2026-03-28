@@ -351,6 +351,26 @@ python question.py "What is gradient descent?" --top-k 5
 
 > **Note:** Requires Mistral (port 8000), Nemotron (port 8002), and the pgvector database to be running.
 
+### Agentic RAG (Advanced Question Answering)
+
+`advanced_question.py` extends the multi-hop pipeline with an **agentic query-planning** step. Instead of searching the raw question directly, the LLM first decomposes it into targeted sub-queries, searches each concurrently, deduplicates results, extracts context, and synthesizes a final answer.
+
+1. **Plan** — LLM generates 1–5 focused sub-queries from the original question
+2. **Multi-search** — All sub-queries run against pgvector concurrently, results deduplicated by chapter
+3. **Extract** — Per-chapter relevant info extracted in parallel
+4. **Synthesize** — Combined context sent to LLM for a cited, comprehensive answer
+
+```bash
+python advanced_question.py "Explain the difference between supervised and unsupervised learning" --top-k 3
+```
+
+| Flag | Description |
+|---|---|
+| `query` | The question to ask |
+| `--top-k` | Results per sub-query (default: 3) |
+
+> **Note:** Requires the same services as `question.py` (Mistral, Nemotron, pgvector).
+
 ---
 
 ## Project Structure
@@ -361,6 +381,7 @@ SB-V-1a/
 ├── timeStampGen.py             # Main processing pipeline
 ├── search.py                   # CLI semantic search over chapter embeddings
 ├── question.py                 # Multi-hop RAG question answering over lectures
+├── advanced_question.py        # Agentic RAG with LLM-planned sub-queries
 ├── vllm_to_vtt.py              # VTT conversion utility
 ├── init_db.py                  # PostgreSQL database initialization & schema
 ├── bench.py                    # Benchmarking utility
