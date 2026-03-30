@@ -21,6 +21,7 @@ RUN pip install --upgrade pip && \
 
 COPY app.py timeStampGen.py vllm_to_vtt.py init_db.py ./
 COPY static/ static/
+COPY frontend/dist/ frontend/dist/
 
 RUN mkdir -p uploads output/video
 
