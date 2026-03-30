@@ -1,4 +1,5 @@
-const API_BASE = '/api';
+const BASE = window.location.pathname.replace(/\/$/, '');
+const API_BASE = `${BASE}/api`;
 
 async function request(url, options = {}) {
   const res = await fetch(url, options);
@@ -69,9 +70,7 @@ export async function listVideos() {
 }
 
 export async function searchVideos(query) {
-  const url = new URL(`${API_BASE}/search`, window.location.origin);
-  url.searchParams.set('q', query);
-  return request(url.toString());
+  return request(`${API_BASE}/search?q=${encodeURIComponent(query)}`);
 }
 
 export function getVideoStreamUrl(jobId) {

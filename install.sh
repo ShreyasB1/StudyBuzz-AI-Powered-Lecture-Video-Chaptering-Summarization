@@ -18,10 +18,10 @@ done
 echo "Setting execute permissions on scripts..."
 chmod +x template/script.sh.erb template/clean.sh template/after.sh install.sh
 
-echo "Building StudyBuzz Docker image and pulling vLLM & DB images in parallel..."
+echo "Pulling base images and building StudyBuzz Docker image in parallel..."
 
-make build-app &
-PID_BUILD=$!
+podman pull docker.io/library/node:20-alpine &
+PID_PULL_NODE=$!
 
 podman pull docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129 &
 PID_PULL_VLLM=$!
@@ -29,9 +29,20 @@ PID_PULL_VLLM=$!
 podman pull docker.io/pgvector/pgvector:pg18-trixie &
 PID_PULL_DB=$!
 
-# Wait for all background processes to finish
-wait $PID_BUILD
+# Wait for base images before building (multi-stage Dockerfile needs node image)
+wait $PID_PULL_NODE
+echo "  Node.js image ready."
+
+make build-app &
+PID_BUILD=$!
+
 wait $PID_PULL_VLLM
+echo "  vLLM image ready."
+
 wait $PID_PULL_DB
+echo "  pgvector image ready."
+
+wait $PID_BUILD
+echo "  App image built."
 
 echo "Install complete. All images are ready."

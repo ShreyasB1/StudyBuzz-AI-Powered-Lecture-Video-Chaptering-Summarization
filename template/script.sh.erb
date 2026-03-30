@@ -31,8 +31,25 @@ if [ -d "${APP_DIR}/static" ]; then
   cp -r "${APP_DIR}/static" "${PWD}/"
   echo "  Copied static/"
 else
-  echo "ERROR: static/ directory not found at ${APP_DIR}/static"
-  exit 1
+  echo "WARNING: static/ directory not found at ${APP_DIR}/static"
+fi
+
+if [ -d "${APP_DIR}/frontend" ]; then
+  mkdir -p "${PWD}/frontend"
+  for fitem in package.json package-lock.json vite.config.js index.html; do
+    if [ -f "${APP_DIR}/frontend/${fitem}" ]; then
+      cp "${APP_DIR}/frontend/${fitem}" "${PWD}/frontend/"
+    fi
+  done
+  if [ -d "${APP_DIR}/frontend/src" ]; then
+    cp -r "${APP_DIR}/frontend/src" "${PWD}/frontend/"
+  fi
+  if [ -d "${APP_DIR}/frontend/public" ]; then
+    cp -r "${APP_DIR}/frontend/public" "${PWD}/frontend/"
+  fi
+  echo "  Copied frontend/ (source for Docker multi-stage build)"
+else
+  echo "WARNING: frontend/ directory not found at ${APP_DIR}/frontend"
 fi
 
 # ---------------------------------------------------------------------------
