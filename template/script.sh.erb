@@ -131,11 +131,55 @@ echo "Pod created: ${POD_NAME}"
 
 # ---------------------------------------------------------------------------
 # Build the StudyBuzz app image
+# podman build is broken on PACE's rootless Podman (crun cannot find
+# /bin/sh inside build containers). We work around this by using
+# podman run + podman cp + podman commit, which works reliably.
 # ---------------------------------------------------------------------------
 echo "TIMING - Building StudyBuzz app image at: $(date)"
 
-podman build \
-  -t "studybuzz-app-${SLURM_JOB_ID}" .
+IMAGE_NAME="studybuzz-app-${SLURM_JOB_ID}"
+BUILD_CTR="studybuzz-build-${SLURM_JOB_ID}"
+
+podman run -d \
+  --name "${BUILD_CTR}" \
+  python:3.11-slim \
+  sleep infinity
+
+podman exec "${BUILD_CTR}" sh -c "\
+  apt-get -o APT::Sandbox::User=root update && \
+  apt-get -o APT::Sandbox::User=root install -y --no-install-recommends ffmpeg && \
+  rm -rf /var/lib/apt/lists/*"
+
+podman cp requirements.txt "${BUILD_CTR}:/app/"
+podman cp requirements_backend.txt "${BUILD_CTR}:/app/"
+
+podman exec "${BUILD_CTR}" sh -c "\
+  cd /app && pip install --upgrade pip && \
+  pip install -r requirements.txt && \
+  pip install -r requirements_backend.txt"
+
+for f in app.py timeStampGen.py vllm_to_vtt.py init_db.py; do
+  podman cp "${f}" "${BUILD_CTR}:/app/"
+done
+
+podman cp static "${BUILD_CTR}:/app/static"
+
+if [ -d "${PWD}/frontend/dist" ]; then
+  podman exec "${BUILD_CTR}" mkdir -p /app/frontend
+  podman cp frontend/dist "${BUILD_CTR}:/app/frontend/dist"
+fi
+
+podman exec "${BUILD_CTR}" mkdir -p /app/uploads /app/output/video
+
+podman commit \
+  -c 'WORKDIR /app' \
+  -c 'ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 BUILD_FRONTEND=0' \
+  -c 'EXPOSE 5000' \
+  -c 'CMD ["sh", "-c", "python init_db.py && python app.py"]' \
+  "${BUILD_CTR}" \
+  "${IMAGE_NAME}"
+
+podman rm -f "${BUILD_CTR}"
 
 echo "TIMING - StudyBuzz image built at: $(date)"
 
