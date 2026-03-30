@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { getResultsByHash, getJobResults, getVideoStreamUrlByHash, getVideoStreamUrl } from '../services/api';
 
 export default function VideoResults({ video, onBack }) {
@@ -6,6 +6,7 @@ export default function VideoResults({ video, onBack }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [activeSection, setActiveSection] = useState('chapters');
+  const videoRef = useRef(null);
 
   const fetchResults = useCallback(async () => {
     setLoading(true);
@@ -40,6 +41,56 @@ export default function VideoResults({ video, onBack }) {
   const sections = [];
   if (videoStreamUrl) sections.push('video');
   sections.push('chapters', 'summaries', 'transcript');
+
+  const [hasSought, setHasSought] = useState(false);
+
+  useEffect(() => {
+    setHasSought(false);
+  }, [video.chapterPath]);
+
+  useEffect(() => {
+    if (!video.chapterPath || !results?.timestamps || !videoRef.current || activeSection !== 'video' || hasSought) return;
+
+    // chapterPath is usually like "chapter_01_Introduction"
+    // Extract the index from it
+    const match = video.chapterPath.match(/^chapter_(\d+)_/);
+    if (match) {
+      const idx = parseInt(match[1], 10) - 1; // 1-based to 0-based
+      if (idx >= 0 && idx < results.timestamps.length) {
+        const timeStr = results.timestamps[idx].time; 
+        
+        // Parse time string to seconds (e.g. "00:01:23,456" or "01:23" or "01:23.456")
+        let seconds = 0;
+        const cleanTime = timeStr.split(/[,\.]/)[0].trim();
+        const timeMain = cleanTime.split(':');
+        if (timeMain.length === 3) {
+          seconds = parseInt(timeMain[0], 10) * 3600 + parseInt(timeMain[1], 10) * 60 + parseInt(timeMain[2], 10);
+        } else if (timeMain.length === 2) {
+          seconds = parseInt(timeMain[0], 10) * 60 + parseInt(timeMain[1], 10);
+        }
+        
+        // Autoplay and seek once video metadata is loaded
+        const onLoadedMetadata = () => {
+          videoRef.current.currentTime = seconds;
+          videoRef.current.play().catch(e => console.warn('Autoplay prevented:', e));
+          setHasSought(true); // Don't re-seek if video re-renders
+        };
+
+        if (videoRef.current.readyState >= 1) { // HAVE_METADATA
+          onLoadedMetadata();
+        } else {
+          videoRef.current.addEventListener('loadedmetadata', onLoadedMetadata, { once: true });
+        }
+      }
+    }
+  }, [video.chapterPath, results, activeSection, hasSought]);
+
+  // Set initial section to 'video' if navigating from search
+  useEffect(() => {
+    if (video.source === 'search' && activeSection !== 'video' && videoStreamUrl) {
+      setActiveSection('video');
+    }
+  }, [video.source, videoStreamUrl]);
 
   return (
     <>
@@ -78,7 +129,7 @@ export default function VideoResults({ video, onBack }) {
 
             {activeSection === 'video' && videoStreamUrl && (
               <div className="video-player-container">
-                <video controls src={videoStreamUrl} />
+                <video ref={videoRef} controls src={videoStreamUrl} />
               </div>
             )}
 

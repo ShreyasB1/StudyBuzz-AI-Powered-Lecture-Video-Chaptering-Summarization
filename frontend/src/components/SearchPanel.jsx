@@ -69,18 +69,24 @@ export default function SearchPanel({ onViewVideo }) {
 
       {results.length > 0 && (
         <div className="search-results">
-          {results.map((r) => (
-            <div
-              key={r.id}
-              className="search-result-item"
-              onClick={() => onViewVideo({ hash: r.id, name: r.title, source: 'search' })}
-            >
-              <div className="video-icon">🎬</div>
-              <div className="video-meta">
-                <div className="video-name">{r.title}</div>
+          {results.map((r, i) => {
+            const prettyChapter = r.chapter_path ? r.chapter_path.replace(/^chapter_\d+_/, '').replace(/_/g, ' ') : '';
+            return (
+              <div
+                key={`${r.hash}-${i}`}
+                className="search-result-item"
+                onClick={() => onViewVideo({ hash: r.hash, name: r.video_name, source: 'search', chapterPath: r.chapter_path })}
+              >
+                <div className="video-icon">🎯</div>
+                <div className="video-meta">
+                  <div className="video-name">{prettyChapter || 'Chapter Match'}</div>
+                  <div style={{ fontSize: '0.85em', color: 'var(--text-muted)' }}>
+                    From: {r.video_name} (Match: {Math.round(r.similarity * 100)}%)
+                  </div>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 

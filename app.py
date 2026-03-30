@@ -13,6 +13,7 @@ import threading
 import urllib.request
 import urllib.error
 import psycopg
+import openai
 from init_db import DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT
 
 BASE_DIR = Path(__file__).parent.absolute()
@@ -277,12 +278,19 @@ def list_db_videos():
 @app.route("/api/search", methods=["GET"])
 def search_videos():
     """
-    Simple search endpoint for the React frontend.
-    Returns results with at minimum: id, title, thumbnail_url, duration.
+    Semantic search endpoint for the React frontend.
+    Returns individual chapters ordered by relevance.
     """
     q = (request.args.get("q") or "").strip()
     if not q:
         return jsonify({"results": []}), 200
+
+    try:
+        client = openai.OpenAI(base_url="http://localhost:8002/v1", api_key="empty")
+        response = client.embeddings.create(model="nemotron", input=q)
+        query_vector = response.data[0].embedding
+    except Exception as e:
+        return jsonify({"error": f"Embedding generation failed: {e}"}), 500
 
     conn_str = f"dbname={DB_NAME} user={DB_USER} password={DB_PASSWORD} host={DB_HOST} port={DB_PORT}"
     try:
@@ -290,22 +298,23 @@ def search_videos():
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT video_hash, video_name
-                    FROM lecture_videos
-                    WHERE video_name ILIKE %s
-                    ORDER BY video_date DESC
-                    LIMIT 50
+                    SELECT c.video_hash, v.video_name, c.chapter_path, 
+                           1 - (c.embedding <=> %s::vector) AS similarity
+                    FROM chapter_embeddings c
+                    JOIN lecture_videos v ON c.video_hash = v.video_hash
+                    ORDER BY c.embedding <=> %s::vector
+                    LIMIT 20
                     """,
-                    (f"%{q}%",),
+                    (query_vector, query_vector),
                 )
                 rows = cur.fetchall()
 
         results = [
             {
-                "id": row[0],
-                "title": row[1],
-                "thumbnail_url": "/static/placeholder-thumb.svg",
-                "duration": None,
+                "hash": row[0],
+                "video_name": row[1],
+                "chapter_path": row[2],
+                "similarity": float(row[3]) if row[3] is not None else 0,
             }
             for row in rows
         ]
