@@ -1,5 +1,5 @@
 # Stage 1: Build the React/Vite frontend
-FROM docker.io/library/node:20-alpine AS frontend-builder
+FROM docker.io/library/node:20-slim AS frontend-builder
 
 WORKDIR /build
 

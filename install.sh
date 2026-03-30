@@ -20,7 +20,7 @@ chmod +x template/script.sh.erb template/clean.sh template/after.sh install.sh
 
 echo "Pulling base images and building StudyBuzz Docker image in parallel..."
 
-podman pull docker.io/library/node:20-alpine &
+podman pull docker.io/library/node:20-slim &
 PID_PULL_NODE=$!
 
 podman pull docker.io/vllm/vllm-openai:qwen3_5-x86_64-cu129 &
