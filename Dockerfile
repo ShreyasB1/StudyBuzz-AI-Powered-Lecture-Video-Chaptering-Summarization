@@ -1,15 +1,3 @@
-# Stage 1: Build the React/Vite frontend
-FROM docker.io/library/node:20-slim AS frontend-builder
-
-WORKDIR /build
-
-COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm install
-
-COPY frontend/ ./
-RUN npm run build
-
-# Stage 2: Python application
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -34,7 +22,7 @@ RUN pip install --upgrade pip && \
 
 COPY app.py timeStampGen.py vllm_to_vtt.py init_db.py ./
 COPY static/ static/
-COPY --from=frontend-builder /build/dist/ frontend/dist/
+COPY frontend/dist/ frontend/dist/
 
 RUN mkdir -p uploads output/video
 

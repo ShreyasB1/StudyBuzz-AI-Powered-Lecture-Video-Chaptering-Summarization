@@ -18,7 +18,7 @@ done
 echo "Setting execute permissions on scripts..."
 chmod +x template/script.sh.erb template/clean.sh template/after.sh install.sh
 
-echo "Pulling base images and building StudyBuzz Docker image in parallel..."
+echo "Pulling base images in parallel..."
 
 podman pull docker.io/library/node:20-slim &
 PID_PULL_NODE=$!
@@ -29,12 +29,8 @@ PID_PULL_VLLM=$!
 podman pull docker.io/pgvector/pgvector:pg18-trixie &
 PID_PULL_DB=$!
 
-# Wait for base images before building (multi-stage Dockerfile needs node image)
 wait $PID_PULL_NODE
 echo "  Node.js image ready."
-
-make build-app &
-PID_BUILD=$!
 
 wait $PID_PULL_VLLM
 echo "  vLLM image ready."
@@ -42,7 +38,20 @@ echo "  vLLM image ready."
 wait $PID_PULL_DB
 echo "  pgvector image ready."
 
-wait $PID_BUILD
+# Build React frontend in a separate container (multi-stage builds break
+# on rootless Podman without subuid ranges)
+if [ -d "frontend/src" ]; then
+  echo "Building React frontend..."
+  podman run --rm \
+    -v "$(pwd)/frontend:/app:Z" \
+    -w /app \
+    docker.io/library/node:20-slim \
+    sh -c "npm install && npm run build"
+  echo "  Frontend built."
+fi
+
+echo "Building StudyBuzz app image..."
+make build-app
 echo "  App image built."
 
 echo "Install complete. All images are ready."
