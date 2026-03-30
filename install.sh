@@ -49,53 +49,13 @@ if [ -d "frontend/src" ]; then
   echo "  Frontend built."
 fi
 
-# Build app image using podman run + commit (podman build is broken
-# on PACE's rootless Podman — crun cannot find /bin/sh in build containers)
-echo "Building StudyBuzz app image..."
+# Clear stale cached layers (incompatible with current crun version)
+echo "Clearing stale build cache..."
+podman rmi studybuzz-app 2>/dev/null || true
+podman image prune -f 2>/dev/null || true
 
-BUILD_CTR="studybuzz-build-install"
-podman rm -f "${BUILD_CTR}" 2>/dev/null || true
-
-podman run -d \
-  --name "${BUILD_CTR}" \
-  python:3.11-slim \
-  sleep infinity
-
-podman exec "${BUILD_CTR}" sh -c "\
-  apt-get -o APT::Sandbox::User=root update && \
-  apt-get -o APT::Sandbox::User=root install -y --no-install-recommends ffmpeg && \
-  rm -rf /var/lib/apt/lists/*"
-
-podman cp requirements.txt "${BUILD_CTR}:/app/"
-podman cp requirements_backend.txt "${BUILD_CTR}:/app/"
-
-podman exec "${BUILD_CTR}" sh -c "\
-  cd /app && pip install --upgrade pip && \
-  pip install -r requirements.txt && \
-  pip install -r requirements_backend.txt"
-
-for f in app.py timeStampGen.py vllm_to_vtt.py init_db.py; do
-  podman cp "${f}" "${BUILD_CTR}:/app/"
-done
-
-podman cp static "${BUILD_CTR}:/app/static"
-
-if [ -d "frontend/dist" ]; then
-  podman exec "${BUILD_CTR}" mkdir -p /app/frontend
-  podman cp frontend/dist "${BUILD_CTR}:/app/frontend/dist"
-fi
-
-podman exec "${BUILD_CTR}" mkdir -p /app/uploads /app/output/video
-
-podman commit \
-  -c 'WORKDIR /app' \
-  -c 'ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 BUILD_FRONTEND=0' \
-  -c 'EXPOSE 5000' \
-  -c 'CMD ["sh", "-c", "python init_db.py && python app.py"]' \
-  "${BUILD_CTR}" \
-  studybuzz-app
-
-podman rm -f "${BUILD_CTR}"
+echo "Building StudyBuzz app image (fresh, no cache)..."
+podman build --no-cache -t studybuzz-app .
 echo "  App image built."
 
 echo "Install complete. All images are ready."
