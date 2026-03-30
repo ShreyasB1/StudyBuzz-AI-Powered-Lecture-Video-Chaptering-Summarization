@@ -5,12 +5,14 @@ import UploadPanel from './components/UploadPanel.jsx';
 import LibraryPanel from './components/LibraryPanel.jsx';
 import SearchPanel from './components/SearchPanel.jsx';
 import VideoResultsView from './components/VideoResultsView.jsx';
+import ChatPanel from './components/ChatPanel.jsx';
 
 const TABS = [
   { id: 'dashboard', label: 'Dashboard' },
   { id: 'upload', label: 'Upload' },
   { id: 'library', label: 'Library' },
   { id: 'search', label: 'Search' },
+  { id: 'chat', label: 'Chat' },
 ];
 
 export default function App() {
@@ -41,6 +43,7 @@ export default function App() {
             {activeTab === 'upload' && <UploadPanel onViewResults={handleViewVideo} />}
             {activeTab === 'library' && <LibraryPanel onViewVideo={handleViewVideo} />}
             {activeTab === 'search' && <SearchPanel onViewVideo={handleViewVideo} />}
+            {activeTab === 'chat' && <ChatPanel />}
           </>
         )}
       </main>

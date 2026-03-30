@@ -15,6 +15,10 @@ import urllib.error
 import psycopg
 import openai
 from init_db import DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT
+import asyncio
+from queue import Queue
+from flask import Response
+from advanced_question_v2 import agentic_answer_stream
 
 BASE_DIR = Path(__file__).parent.absolute()
 STATIC_DIR = BASE_DIR / "static"
@@ -579,6 +583,64 @@ def get_pipeline_log(job_id):
     if not log_path.exists():
         return jsonify({"error": "Log file not found"}), 404
     return jsonify({"log": log_path.read_text(encoding="utf-8")}), 200
+
+# ---------------------------------------------------------------------------
+# Chat Endpoint
+# ---------------------------------------------------------------------------
+@app.route("/api/chat", methods=["POST"])
+def chat():
+    data = request.json or {}
+    message = data.get("message", "")
+    rag = data.get("rag", False)
+    
+    if not message:
+        return jsonify({"error": "Message is required"}), 400
+
+    def generate_rag():
+        q = Queue()
+
+        def run_async():
+            async def wrap():
+                try:
+                    async for event in agentic_answer_stream(message):
+                        q.put(event)
+                except Exception as e:
+                    q.put(json.dumps({"type": "error", "message": str(e)}) + "\n")
+                finally:
+                    q.put(None)  # Sentinel
+                    
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(wrap())
+            loop.close()
+
+        threading.Thread(target=run_async, daemon=True).start()
+
+        while True:
+            item = q.get()
+            if item is None:
+                break
+            yield f"data: {item}\n\n"
+
+    def generate_direct():
+        try:
+            client = openai.Client(api_key="empty", base_url="http://localhost:8000/v1")
+            response = client.chat.completions.create(
+                model="mistral-large",
+                messages=[{"role": "user", "content": message}],
+                stream=True
+            )
+            for chunk in response:
+                content = chunk.choices[0].delta.content
+                if content:
+                    yield f"data: {json.dumps({'type': 'chunk', 'text': content})}\n\n"
+            
+            # Send a final empty final_answer event to signal completion properly for UI
+            yield f"data: {json.dumps({'type': 'final_answer', 'data': ''})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return Response(generate_rag() if rag else generate_direct(), mimetype="text/event-stream")
 
 
 # ---------------------------------------------------------------------------

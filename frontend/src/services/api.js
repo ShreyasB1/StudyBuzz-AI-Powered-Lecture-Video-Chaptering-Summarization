@@ -81,3 +81,12 @@ export function getVideoStreamUrl(jobId) {
 export function getVideoStreamUrlByHash(videoHash) {
   return `${API_BASE}/video/hash/${encodeURIComponent(videoHash)}`;
 }
+
+export async function createChatStream(message, rag) {
+  const url = `${API_BASE}/chat`;
+  return fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, rag }),
+  });
+}

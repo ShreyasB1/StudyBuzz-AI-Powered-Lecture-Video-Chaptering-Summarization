@@ -355,6 +355,90 @@ async def agentic_answer(question: str, top_k: int = TOP_K_PER_QUERY) -> str:
     return answer
 
 
+async def agentic_answer_stream(question: str, top_k: int = TOP_K_PER_QUERY):
+    """
+    Streaming version of the agentic RAG pipeline.
+    Yields SSE-compatible JSON strings for real-time UI updates.
+    """
+    
+    # Step 1: Plan
+    yield json.dumps({"type": "status", "message": "Planning search queries..."})
+    sub_queries = await plan_queries(question)
+    yield json.dumps({"type": "queries", "data": sub_queries})
+    
+    # Step 2: Search
+    yield json.dumps({"type": "status", "message": "Searching database..."})
+    results = await multi_search(sub_queries, top_k=top_k)
+    
+    if not results:
+        yield json.dumps({"type": "final_answer", "data": "No relevant chapters found in the database."})
+        return
+
+    # Yield sources so UI can display them while extracting
+    sources_data = [
+        {"id": i, "video": r["video_name"], "chapter": r["chapter_path"]} 
+        for i, r in enumerate(results, 1)
+    ]
+    yield json.dumps({"type": "sources", "data": sources_data})
+
+    # Step 3: Extract (Streaming results as they complete)
+    async def _extract_local(i: int, result: dict) -> tuple[int, str]:
+        focus_list = "\n".join([f"- {q}" for q in result["matched_queries"]])
+        log_queries = " | ".join(result["matched_queries"])
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a precision research extraction engine. Your task is to extract information "
+                    "from the provided source text that explicitly answers the SPECIFIC FOCUS queries. "
+                    "Use the GLOBAL CONTEXT to understand the overarching goal, but ONLY extract "
+                    "information relevant to the SPECIFIC FOCUS. If the text does not contain relevant "
+                    "information for the focus queries, reply exactly with: 'No relevant information in this chapter.' "
+                    "Be concise and do not hallucinate."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"GLOBAL CONTEXT (Master Question):\n{question}\n\n"
+                    f"SPECIFIC FOCUS (Extract answers for these):\n{focus_list}\n\n"
+                    f"--- Chapter Content (from {result['video_name']}) ---\n"
+                    f"{result['content']}"
+                ),
+            },
+        ]
+
+        try:
+            extraction = await ask_llm(messages)
+            return (
+                i,
+                f"Source {i} ({result['video_name']} – {result['chapter_path']}):\n{extraction}",
+            )
+        except Exception as e:
+            return (
+                i,
+                f"Source {i} ({result['video_name']}): [error retrieving extraction]",
+            )
+
+    tasks = [asyncio.create_task(_extract_local(i, r)) for i, r in enumerate(results, 1)]
+    extractions_map = {}
+    
+    # Yield extraction updates as each sub-task completes
+    for completed_task in asyncio.as_completed(tasks):
+        idx, text = await completed_task
+        extractions_map[idx] = text
+        yield json.dumps({"type": "extraction", "id": idx, "content": text})
+
+    # Gather extractions in original order for the synthesize step
+    extractions = [extractions_map[i] for i in range(1, len(results) + 1)]
+
+    # Step 4: Synthesize
+    yield json.dumps({"type": "status", "message": "Synthesizing final answer..."})
+    final_answer = await synthesize(question, extractions)
+    yield json.dumps({"type": "final_answer", "data": final_answer})
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
