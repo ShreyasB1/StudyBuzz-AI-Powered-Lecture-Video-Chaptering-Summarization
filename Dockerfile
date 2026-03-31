@@ -9,13 +9,25 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     BUILD_FRONTEND=0
 
 # node:20-slim is Debian bookworm and works on PACE's rootless Podman.
-# python:3.11-slim does NOT (crun cannot find /bin/sh under single UID mapping).
-# We install Python 3.11 + FFmpeg from Debian repos instead.
+# python:3.11-slim does NOT work (crun /bin/sh issue under single UID mapping).
+
+# 1) Install Python (clean — no fontconfig deps)
 RUN apt-get -o APT::Sandbox::User=root update && \
     apt-get -o APT::Sandbox::User=root install -y --no-install-recommends \
-    python3 python3-pip python3-dev ffmpeg \
+    python3 python3-pip python3-dev \
     && ln -sf /usr/bin/python3 /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
+
+# 2) Install FFmpeg separately with --force-all.
+#    fontconfig's post-install script runs chown which fails under rootless
+#    Podman's single UID mapping. The FFmpeg binary itself works fine for
+#    audio/video processing — we don't need font rendering.
+RUN apt-get -o APT::Sandbox::User=root update && \
+    (apt-get -o APT::Sandbox::User=root \
+      -o Dpkg::Options::="--force-all" \
+      install -y --no-install-recommends ffmpeg || true) && \
+    ffmpeg -version && \
+    rm -rf /var/lib/apt/lists/*
 
 # Build React frontend
 COPY frontend/package.json frontend/package-lock.json* frontend/
