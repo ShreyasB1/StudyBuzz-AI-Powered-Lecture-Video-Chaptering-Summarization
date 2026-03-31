@@ -26,7 +26,7 @@ RUN apt-get -o APT::Sandbox::User=root update && \
 RUN wget -q "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz" \
       -O /tmp/ffmpeg.tar.xz && \
     mkdir -p /tmp/ffmpeg && \
-    tar -xf /tmp/ffmpeg.tar.xz -C /tmp/ffmpeg --strip-components=1 && \
+    tar -xf /tmp/ffmpeg.tar.xz -C /tmp/ffmpeg --strip-components=1 --no-same-owner && \
     cp /tmp/ffmpeg/bin/ffmpeg /usr/local/bin/ && \
     cp /tmp/ffmpeg/bin/ffprobe /usr/local/bin/ && \
     rm -rf /tmp/ffmpeg /tmp/ffmpeg.tar.xz && \
