@@ -38,23 +38,7 @@ echo "  vLLM image ready."
 wait $PID_PULL_DB
 echo "  pgvector image ready."
 
-# Build React frontend in a separate container
-if [ -d "frontend/src" ]; then
-  echo "Building React frontend..."
-  podman run --rm \
-    -v "$(pwd)/frontend:/app:Z" \
-    -w /app \
-    docker.io/library/node:20-slim \
-    sh -c "npm install && npm run build"
-  echo "  Frontend built."
-fi
-
-# Clear stale cached layers (incompatible with current crun version)
-echo "Clearing stale build cache..."
-podman rmi studybuzz-app 2>/dev/null || true
-podman image prune -f 2>/dev/null || true
-
-echo "Building StudyBuzz app image (fresh, no cache)..."
+echo "Building StudyBuzz app image (includes frontend build)..."
 podman build --no-cache -t studybuzz-app .
 echo "  App image built."
 

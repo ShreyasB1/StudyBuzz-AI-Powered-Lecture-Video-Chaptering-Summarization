@@ -14,8 +14,4 @@ install.sh
 Makefile
 README.md
 frontend/node_modules
-frontend/src
-frontend/package.json
-frontend/package-lock.json
-frontend/vite.config.js
-frontend/index.html
+frontend/dist

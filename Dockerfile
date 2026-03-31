@@ -1,4 +1,4 @@
-FROM docker.io/library/python:3.11-slim
+FROM docker.io/library/node:20-slim
 
 WORKDIR /app
 
@@ -8,21 +8,34 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     BUILD_FRONTEND=0
 
-# APT::Sandbox::User=root avoids privilege-drop failures under
-# rootless Podman without subuid ranges (common on shared HPC clusters).
+# node:20-slim is Debian bookworm and works on PACE's rootless Podman.
+# python:3.11-slim does NOT (crun cannot find /bin/sh under single UID mapping).
+# We install Python 3.11 + FFmpeg from Debian repos instead.
 RUN apt-get -o APT::Sandbox::User=root update && \
     apt-get -o APT::Sandbox::User=root install -y --no-install-recommends \
-    ffmpeg \
+    python3 python3-pip python3-dev ffmpeg \
+    && ln -sf /usr/bin/python3 /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
+# Build React frontend
+COPY frontend/package.json frontend/package-lock.json* frontend/
+RUN cd frontend && npm install
+
+COPY frontend/ frontend/
+RUN cd frontend && npm run build && \
+    mv dist /app/frontend_dist && \
+    rm -rf /app/frontend && \
+    mkdir -p /app/frontend && \
+    mv /app/frontend_dist /app/frontend/dist
+
+# Install Python dependencies
 COPY requirements.txt requirements_backend.txt ./
-RUN pip install --upgrade pip && \
-    pip install -r requirements.txt && \
-    pip install -r requirements_backend.txt
+RUN pip install --break-system-packages --upgrade pip && \
+    pip install --break-system-packages -r requirements.txt && \
+    pip install --break-system-packages -r requirements_backend.txt
 
 COPY app.py timeStampGen.py vllm_to_vtt.py init_db.py ./
 COPY static/ static/
-COPY frontend/dist/ frontend/dist/
 
 RUN mkdir -p uploads output/video
 
