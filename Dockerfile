@@ -8,26 +8,29 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     BUILD_FRONTEND=0
 
-# node:20-slim is Debian bookworm and works on PACE's rootless Podman.
-# python:3.11-slim does NOT work (crun /bin/sh issue under single UID mapping).
+# node:20-slim (Debian bookworm) is the only base image that works on PACE's
+# rootless Podman (single UID mapping, no subuid/subgid ranges).
+# python:3.11-slim and alpine images both fail with crun /bin/sh errors.
 
-# 1) Install Python (clean — no fontconfig deps)
+# Install Python + download helpers.
+# FFmpeg is NOT installed via apt — its fontconfig dependency chain runs
+# chown in post-install scripts, which errors under single UID mapping.
 RUN apt-get -o APT::Sandbox::User=root update && \
     apt-get -o APT::Sandbox::User=root install -y --no-install-recommends \
-    python3 python3-pip python3-dev \
+    python3 python3-pip python3-dev ca-certificates wget xz-utils \
     && ln -sf /usr/bin/python3 /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
-# 2) Install FFmpeg separately with --force-all.
-#    fontconfig's post-install script runs chown which fails under rootless
-#    Podman's single UID mapping. The FFmpeg binary itself works fine for
-#    audio/video processing — we don't need font rendering.
-RUN apt-get -o APT::Sandbox::User=root update && \
-    (apt-get -o APT::Sandbox::User=root \
-      -o Dpkg::Options::="--force-all" \
-      install -y --no-install-recommends ffmpeg || true) && \
-    ffmpeg -version && \
-    rm -rf /var/lib/apt/lists/*
+# Static FFmpeg binary — fully self-contained, zero system library deps.
+# Source: BtbN/FFmpeg-Builds on GitHub (rebuilt daily, stable URL).
+RUN wget -q "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz" \
+      -O /tmp/ffmpeg.tar.xz && \
+    mkdir -p /tmp/ffmpeg && \
+    tar -xf /tmp/ffmpeg.tar.xz -C /tmp/ffmpeg --strip-components=1 && \
+    cp /tmp/ffmpeg/bin/ffmpeg /usr/local/bin/ && \
+    cp /tmp/ffmpeg/bin/ffprobe /usr/local/bin/ && \
+    rm -rf /tmp/ffmpeg /tmp/ffmpeg.tar.xz && \
+    ffmpeg -version
 
 # Build React frontend
 COPY frontend/package.json frontend/package-lock.json* frontend/

@@ -38,6 +38,10 @@ echo "  vLLM image ready."
 wait $PID_PULL_DB
 echo "  pgvector image ready."
 
+echo "Clearing stale build cache..."
+podman rmi studybuzz-app 2>/dev/null || true
+podman image prune -f 2>/dev/null || true
+
 echo "Building StudyBuzz app image (includes frontend build)..."
 podman build --no-cache -t studybuzz-app .
 echo "  App image built."
