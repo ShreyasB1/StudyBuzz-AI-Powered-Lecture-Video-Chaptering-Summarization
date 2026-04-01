@@ -662,21 +662,56 @@ def chat():
     data = request.json or {}
     message = data.get("message", "")
     rag = data.get("rag", False)
+    req_id = str(uuid.uuid4())[:8]
+    print(
+        f"[Chat {req_id}] Incoming request rag={rag} message_len={len(message)} "
+        f"preview='{message[:120]}'",
+        flush=True,
+    )
     
     if not message:
+        print(f"[Chat {req_id}] Rejected: empty message", flush=True)
         return jsonify({"error": "Message is required"}), 400
 
     def generate_rag():
         q = Queue()
+        event_counts = {}
 
         def run_async():
             async def wrap():
                 try:
                     async for event in agentic_answer_stream(message):
+                        try:
+                            parsed = json.loads(event)
+                            event_type = parsed.get("type", "unknown")
+                            event_counts[event_type] = event_counts.get(event_type, 0) + 1
+                            if event_type == "status":
+                                print(
+                                    f"[Chat {req_id}] RAG status: {parsed.get('message', '')}",
+                                    flush=True,
+                                )
+                            elif event_type == "extraction":
+                                content = parsed.get("content", "")
+                                is_fallback = "No relevant information in this chapter." in content
+                                print(
+                                    f"[Chat {req_id}] Extraction source={parsed.get('id')} "
+                                    f"len={len(content)} fallback={is_fallback}",
+                                    flush=True,
+                                )
+                            elif event_type == "final_answer":
+                                final_text = parsed.get("data", "")
+                                print(
+                                    f"[Chat {req_id}] Final answer len={len(final_text)}",
+                                    flush=True,
+                                )
+                        except Exception as parse_err:
+                            print(f"[Chat {req_id}] Failed to parse stream event: {parse_err}", flush=True)
                         q.put(event)
                 except Exception as e:
+                    print(f"[Chat {req_id}] RAG stream error: {e}", flush=True)
                     q.put(json.dumps({"type": "error", "message": str(e)}) + "\n")
                 finally:
+                    print(f"[Chat {req_id}] RAG stream finished. Event counts: {event_counts}", flush=True)
                     q.put(None)  # Sentinel
                     
             loop = asyncio.new_event_loop()
@@ -689,6 +724,7 @@ def chat():
         while True:
             item = q.get()
             if item is None:
+                print(f"[Chat {req_id}] SSE stream closed", flush=True)
                 break
             yield f"data: {item}\n\n"
 
@@ -707,7 +743,9 @@ def chat():
             
             # Send a final empty final_answer event to signal completion properly for UI
             yield f"data: {json.dumps({'type': 'final_answer', 'data': ''})}\n\n"
+            print(f"[Chat {req_id}] Direct stream finished", flush=True)
         except Exception as e:
+            print(f"[Chat {req_id}] Direct stream error: {e}", flush=True)
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
     return Response(generate_rag() if rag else generate_direct(), mimetype="text/event-stream")

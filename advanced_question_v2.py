@@ -49,6 +49,14 @@ def _strip_think_tags(text: str) -> str:
     return text.split("</think>")[-1].strip()
 
 
+def _is_no_relevant_response(text: str) -> bool:
+    """Best-effort check for the extraction fallback response."""
+    if not text:
+        return False
+    normalized = " ".join(text.strip().lower().split())
+    return "no relevant information in this chapter" in normalized
+
+
 def _extract_plain_text_from_vtt(content: str) -> str:
     """Return just the spoken text from a VTT file."""
     lines = []
@@ -70,27 +78,46 @@ def _load_chapter_content(folder_path: str, chapter_path: str) -> str:
     print(f"  Attempting to read summary: {summary_path}")
     if os.path.exists(summary_path):
         try:
+            summary_size = os.path.getsize(summary_path)
+            print(f"    Summary exists (size={summary_size} bytes)")
+        except OSError as e:
+            print(f"    Summary stat failed: {e}")
+        try:
             with open(summary_path, "r", encoding="utf-8") as f:
                 summary_data = json.load(f)
+            print(f"    Summary loaded with {len(summary_data)} entries")
             for title, summary_text in summary_data.items():
                 parts.append(f"Chapter: {title}\nSummary: {summary_text}")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    Failed to parse summary JSON: {e}")
+    else:
+        print("    Summary file missing")
 
     transcript_path = os.path.join(chapter_dir, "transcript.vtt")
     print(f"  Attempting to read transcript: {transcript_path}")
     if os.path.exists(transcript_path):
         try:
+            transcript_size = os.path.getsize(transcript_path)
+            print(f"    Transcript exists (size={transcript_size} bytes)")
+        except OSError as e:
+            print(f"    Transcript stat failed: {e}")
+        try:
             with open(transcript_path, "r", encoding="utf-8") as f:
                 raw = f.read()
             plain = _extract_plain_text_from_vtt(raw)
+            print(f"    Transcript plain-text length: {len(plain)} chars")
             if plain:
                 parts.append(f"Transcript:\n{plain}")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    Failed to parse transcript: {e}")
+    else:
+        print("    Transcript file missing")
 
     if not parts:
+        print(f"    No usable content found for chapter: {chapter_path}")
         parts.append(f"[No content found on disk for chapter path: {chapter_path}]")
+    else:
+        print(f"    Combined chapter context length: {sum(len(p) for p in parts)} chars")
 
     return "\n\n".join(parts)
 
@@ -108,6 +135,7 @@ async def ask_llm(messages: list[dict]) -> str:
 
 async def search_top_k(query: str, limit: int = 5) -> list[dict]:
     """Return the top-k chapter matches with metadata + on-disk content."""
+    print(f"  [Search] Embedding query: '{query[:120]}'")
     client = openai.AsyncOpenAI(base_url=EMBED_BASE_URL, api_key="empty")
     response = await client.embeddings.create(model=EMBED_MODEL, input=query)
     query_vector = response.data[0].embedding
@@ -132,9 +160,13 @@ async def search_top_k(query: str, limit: int = 5) -> list[dict]:
         return rows
 
     rows = await asyncio.to_thread(_db_query)
+    print(f"  [Search] DB returned {len(rows)} rows for query '{query[:80]}'")
     results: list[dict] = []
-    for row in rows:
+    for idx, row in enumerate(rows, 1):
         video_hash, video_name, folder_path, chapter_path, similarity = row
+        print(
+            f"    [Search:{idx}] video='{video_name}' chapter='{chapter_path}' sim={similarity:.4f}"
+        )
         content = _load_chapter_content(folder_path, chapter_path)
         results.append(
             {
@@ -218,6 +250,10 @@ async def multi_search(queries: list[str], top_k: int = TOP_K_PER_QUERY) -> list
         *[search_top_k(q, limit=top_k) for q in queries]
     )
 
+    for idx, batch in enumerate(search_results, 1):
+        sims = ", ".join(f"{r['similarity']:.4f}" for r in batch)
+        print(f"   Sub-query {idx} returned {len(batch)} rows (sims: [{sims}])")
+
     seen: dict[str, dict] = {}
     for batch_idx, batch in enumerate(search_results):
         current_query = queries[batch_idx]
@@ -257,6 +293,7 @@ async def extract_all(question: str, results: list[dict]) -> list[str]:
             f"[{i}/{len(results)}] Extracting from: {result['chapter_path']} "
             f"(sim {result['similarity']:.4f}, triggers: [{log_queries}])"
         )
+        print(f"  ↳ Context length for source {i}: {len(result['content'])} chars")
 
         messages = [
             {
@@ -284,6 +321,11 @@ async def extract_all(question: str, results: list[dict]) -> list[str]:
         try:
             extraction = await ask_llm(messages)
             print(f"  ✓ [{i}] Got extraction ({len(extraction)} chars)")
+            if _is_no_relevant_response(extraction):
+                print(f"  ! [{i}] Model returned fallback no-relevance response")
+            else:
+                preview = extraction.replace("\n", " ")[:180]
+                print(f"  ↳ [{i}] Extraction preview: {preview}")
             return (
                 i,
                 f"Source {i} ({result['video_name']} – {result['chapter_path']}):\n"
@@ -306,6 +348,11 @@ async def extract_all(question: str, results: list[dict]) -> list[str]:
 async def synthesize(question: str, extractions: list[str]) -> str:
     """Send the combined context to the LLM for a final answer."""
     print("\n🧠 Synthesizing final answer...")
+    fallback_count = sum(1 for text in extractions if _is_no_relevant_response(text))
+    print(
+        f"   Synthesis input stats: total_sources={len(extractions)}, "
+        f"fallback_sources={fallback_count}, useful_sources={len(extractions) - fallback_count}"
+    )
     combined_context = "\n\n".join(extractions)
 
     messages = [
@@ -364,11 +411,13 @@ async def agentic_answer_stream(question: str, top_k: int = TOP_K_PER_QUERY):
     # Step 1: Plan
     yield json.dumps({"type": "status", "message": "Planning search queries..."})
     sub_queries = await plan_queries(question)
+    print(f"[Stream] Planned queries count: {len(sub_queries)}")
     yield json.dumps({"type": "queries", "data": sub_queries})
     
     # Step 2: Search
     yield json.dumps({"type": "status", "message": "Searching database..."})
     results = await multi_search(sub_queries, top_k=top_k)
+    print(f"[Stream] Search produced {len(results)} deduped sources")
     
     if not results:
         yield json.dumps({"type": "final_answer", "data": "No relevant chapters found in the database."})
@@ -385,6 +434,10 @@ async def agentic_answer_stream(question: str, top_k: int = TOP_K_PER_QUERY):
     async def _extract_local(i: int, result: dict) -> tuple[int, str]:
         focus_list = "\n".join([f"- {q}" for q in result["matched_queries"]])
         log_queries = " | ".join(result["matched_queries"])
+        print(
+            f"[Stream][{i}/{len(results)}] Extracting chapter='{result['chapter_path']}' "
+            f"sim={result['similarity']:.4f} triggers=[{log_queries}] content_len={len(result['content'])}"
+        )
 
         messages = [
             {
@@ -411,11 +464,17 @@ async def agentic_answer_stream(question: str, top_k: int = TOP_K_PER_QUERY):
 
         try:
             extraction = await ask_llm(messages)
+            if _is_no_relevant_response(extraction):
+                print(f"[Stream][{i}] Fallback no-relevance extraction")
+            else:
+                preview = extraction.replace("\n", " ")[:180]
+                print(f"[Stream][{i}] Extraction preview: {preview}")
             return (
                 i,
                 f"Source {i} ({result['video_name']} – {result['chapter_path']}):\n{extraction}",
             )
         except Exception as e:
+            print(f"[Stream][{i}] Extraction error: {e}")
             return (
                 i,
                 f"Source {i} ({result['video_name']}): [error retrieving extraction]",
@@ -428,6 +487,7 @@ async def agentic_answer_stream(question: str, top_k: int = TOP_K_PER_QUERY):
     for completed_task in asyncio.as_completed(tasks):
         idx, text = await completed_task
         extractions_map[idx] = text
+        print(f"[Stream] Emitting extraction for source {idx} (len={len(text)})")
         yield json.dumps({"type": "extraction", "id": idx, "content": text})
 
     # Gather extractions in original order for the synthesize step
@@ -435,6 +495,11 @@ async def agentic_answer_stream(question: str, top_k: int = TOP_K_PER_QUERY):
 
     # Step 4: Synthesize
     yield json.dumps({"type": "status", "message": "Synthesizing final answer..."})
+    fallback_count = sum(1 for text in extractions if _is_no_relevant_response(text))
+    print(
+        f"[Stream] Synthesis input stats: total={len(extractions)}, "
+        f"fallback={fallback_count}, useful={len(extractions) - fallback_count}"
+    )
     final_answer = await synthesize(question, extractions)
     yield json.dumps({"type": "final_answer", "data": final_answer})
 
