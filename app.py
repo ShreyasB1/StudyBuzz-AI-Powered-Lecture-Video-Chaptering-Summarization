@@ -1,5 +1,6 @@
 import os
 import re
+import mimetypes
 import sys
 import json
 import subprocess
@@ -134,14 +135,32 @@ def _hash_file(filepath):
     return sha256_hash.hexdigest()
 
 
+def _guess_video_mimetype(video_path):
+    mimetype, _ = mimetypes.guess_type(str(video_path))
+    if mimetype:
+        return mimetype
+
+    suffix = Path(video_path).suffix.lower()
+    if suffix == ".mkv":
+        return "video/x-matroska"
+    if suffix == ".webm":
+        return "video/webm"
+    if suffix == ".mov":
+        return "video/quicktime"
+    if suffix in {".mp4", ".m4v", ".mpeg", ".mpg"}:
+        return "video/mp4"
+    return "application/octet-stream"
+
+
 def _stream_video_with_range(video_path):
     """Serve local MP4 with HTTP range support for browser streaming/seek."""
     video_path = str(video_path)
     file_size = os.path.getsize(video_path)
+    mimetype = _guess_video_mimetype(video_path)
     range_header = request.headers.get("Range")
 
     if not range_header:
-        response = send_file(video_path, mimetype="video/mp4")
+        response = send_file(video_path, mimetype=mimetype)
         response.headers["Accept-Ranges"] = "bytes"
         response.headers["Content-Length"] = str(file_size)
         return response
@@ -177,7 +196,7 @@ def _stream_video_with_range(video_path):
                 remaining -= len(chunk)
                 yield chunk
 
-    response = Response(generate(), status=206, mimetype="video/mp4")
+    response = Response(generate(), status=206, mimetype=mimetype)
     response.headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
     response.headers["Accept-Ranges"] = "bytes"
     response.headers["Content-Length"] = str(length)
