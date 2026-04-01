@@ -1,5 +1,69 @@
 import React, { useState, useRef, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 import { createChatStream } from '../services/api';
+
+const markdownComponents = {
+  p({ children }) {
+    return <p className="markdown-paragraph">{children}</p>;
+  },
+  strong({ children }) {
+    return <strong className="markdown-strong">{children}</strong>;
+  },
+  em({ children }) {
+    return <em className="markdown-emphasis">{children}</em>;
+  },
+  blockquote({ children }) {
+    return <blockquote className="markdown-blockquote">{children}</blockquote>;
+  },
+  ul({ children }) {
+    return <ul className="markdown-list markdown-list-unordered">{children}</ul>;
+  },
+  ol({ children }) {
+    return <ol className="markdown-list markdown-list-ordered">{children}</ol>;
+  },
+  li({ children }) {
+    return <li className="markdown-list-item">{children}</li>;
+  },
+  a({ href, children }) {
+    return (
+      <a className="markdown-link" href={href} target="_blank" rel="noreferrer noopener">
+        {children}
+      </a>
+    );
+  },
+  code({ inline, className, children, ...props }) {
+    if (inline) {
+      return (
+        <code className="markdown-inline-code" {...props}>
+          {children}
+        </code>
+      );
+    }
+
+    return (
+      <code className={className ? `markdown-code ${className}` : 'markdown-code'} {...props}>
+        {children}
+      </code>
+    );
+  },
+  pre({ children }) {
+    return <pre className="markdown-pre">{children}</pre>;
+  },
+  h1({ children }) {
+    return <h1 className="markdown-heading markdown-heading-1">{children}</h1>;
+  },
+  h2({ children }) {
+    return <h2 className="markdown-heading markdown-heading-2">{children}</h2>;
+  },
+  h3({ children }) {
+    return <h3 className="markdown-heading markdown-heading-3">{children}</h3>;
+  },
+  hr() {
+    return <hr className="markdown-divider" />;
+  },
+};
 
 export default function ChatPanel() {
   const [messages, setMessages] = useState([]);
@@ -119,7 +183,7 @@ export default function ChatPanel() {
         {open && (
           <div className="source-content">
             {extraction ? (
-              <pre>{extraction.trim()}</pre>
+              <pre className="source-extraction-pre">{extraction.trim()}</pre>
             ) : (
               <span className="source-loading">Extracting context...</span>
             )}
@@ -150,7 +214,19 @@ export default function ChatPanel() {
           {messages.map((m, i) => (
             <div key={m.id || i} className={`chat-message ${m.role === 'user' ? 'message-user' : 'message-assistant'}`}>
               <div className="message-content-wrapper">
-                <div className="message-content">{m.content || (!m.status && <span className="typing-cursor"></span>)}</div>
+                {m.role === 'assistant' ? (
+                  m.content ? (
+                    <div className="message-content message-markdown">
+                      <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]} components={markdownComponents}>
+                        {m.content}
+                      </ReactMarkdown>
+                    </div>
+                  ) : (
+                    !m.status && <span className="typing-cursor"></span>
+                  )
+                ) : (
+                  <div className="message-content message-plain">{m.content}</div>
+                )}
                 
                 {m.status && (
                   <div className="message-status">
