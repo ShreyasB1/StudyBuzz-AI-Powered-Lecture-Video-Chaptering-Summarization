@@ -86,7 +86,7 @@ def _extract_plain_text_from_vtt(content: str) -> str:
 
 def _load_chapter_content(folder_path: str, chapter_path: str) -> str:
     """Load transcript + summary for a chapter from disk."""
-    chapter_dir = os.path.join(folder_path, "chapters", chapter_path.split("/", 1)[-1])
+    chapter_dir = os.path.join(folder_path, chapter_path)
 
     parts: list[str] = []
 
