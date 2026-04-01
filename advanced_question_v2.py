@@ -35,6 +35,7 @@ LLM_MODEL = "mistral-large"
 
 TOP_K_PER_QUERY = 3  # results per sub-query (kept small to avoid flooding)
 MAX_SUB_QUERIES = 5  # cap on sub-queries the planner can emit
+MIN_SIMILARITY = float(os.getenv("RAG_MIN_SIMILARITY", "0.25"))
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +203,11 @@ async def plan_queries(question: str) -> list[str]:
                 f"- Return between 1 and {MAX_SUB_QUERIES} queries.\n"
                 "- Always include the original question (or a close paraphrase) "
                 "as the first query.\n"
+                "- Stay in-domain with the user's wording. Do NOT introduce new "
+                "academic domains, analogies, or contexts unless the user explicitly "
+                "asks for them.\n"
+                "- Prefer narrower, lexical variants of the user's terms over "
+                "broad conceptual expansions.\n"
                 "- Output ONLY valid JSON — a flat array of strings, no markdown, "
                 "no explanation.\n\n"
                 'Example output: ["What is gradient descent?", '
@@ -274,10 +280,18 @@ async def multi_search(queries: list[str], top_k: int = TOP_K_PER_QUERY) -> list
                     seen[key]["similarity"] = result["similarity"]
 
     deduped = sorted(seen.values(), key=lambda r: r["similarity"], reverse=True)
+    filtered = [r for r in deduped if r["similarity"] >= MIN_SIMILARITY]
     print(
         f"   Found {sum(len(b) for b in search_results)} results total, "
-        f"{len(deduped)} unique chapters after dedup.\n"
+        f"{len(deduped)} unique chapters after dedup, "
+        f"{len(filtered)} after similarity filter (min={MIN_SIMILARITY:.2f}).\n"
     )
+
+    # If the threshold filtered everything, keep best candidates so we can still answer.
+    if filtered:
+        return filtered
+
+    print("   Similarity filter removed all chapters; falling back to top deduped results.")
     return deduped
 
 
@@ -302,8 +316,10 @@ async def extract_all(question: str, results: list[dict]) -> list[str]:
                     "You are a precision research extraction engine. Your task is to extract information "
                     "from the provided source text that explicitly answers the SPECIFIC FOCUS queries. "
                     "Use the GLOBAL CONTEXT to understand the overarching goal, but ONLY extract "
-                    "information relevant to the SPECIFIC FOCUS. If the text does not contain relevant "
-                    "information for the focus queries, reply exactly with: 'No relevant information in this chapter.'"
+                    "information relevant to the SPECIFIC FOCUS. Treat this as ANY-match, not ALL-match: "
+                    "if the chapter helps with at least one focus query, return those useful parts. "
+                    "If the text does not contain relevant information for any focus query, reply exactly "
+                    "with: 'No relevant information in this chapter.' "
                     "Be concise and do not hallucinate."
                 ),
             },
@@ -446,8 +462,10 @@ async def agentic_answer_stream(question: str, top_k: int = TOP_K_PER_QUERY):
                     "You are a precision research extraction engine. Your task is to extract information "
                     "from the provided source text that explicitly answers the SPECIFIC FOCUS queries. "
                     "Use the GLOBAL CONTEXT to understand the overarching goal, but ONLY extract "
-                    "information relevant to the SPECIFIC FOCUS. If the text does not contain relevant "
-                    "information for the focus queries, reply exactly with: 'No relevant information in this chapter.' "
+                    "information relevant to the SPECIFIC FOCUS. Treat this as ANY-match, not ALL-match: "
+                    "if the chapter helps with at least one focus query, return those useful parts. "
+                    "If the text does not contain relevant information for any focus query, reply exactly "
+                    "with: 'No relevant information in this chapter.' "
                     "Be concise and do not hallucinate."
                 ),
             },
