@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import json
 import subprocess
@@ -131,6 +132,56 @@ def _hash_file(filepath):
         for byte_block in iter(lambda: f.read(4096), b""):
             sha256_hash.update(byte_block)
     return sha256_hash.hexdigest()
+
+
+def _stream_video_with_range(video_path):
+    """Serve local MP4 with HTTP range support for browser streaming/seek."""
+    video_path = str(video_path)
+    file_size = os.path.getsize(video_path)
+    range_header = request.headers.get("Range")
+
+    if not range_header:
+        response = send_file(video_path, mimetype="video/mp4")
+        response.headers["Accept-Ranges"] = "bytes"
+        response.headers["Content-Length"] = str(file_size)
+        return response
+
+    match = re.search(r"bytes=(\d+)-(\d*)", range_header)
+    if not match:
+        return Response(
+            status=416,
+            headers={"Content-Range": f"bytes */{file_size}"},
+        )
+
+    start = int(match.group(1))
+    end_str = match.group(2)
+    end = int(end_str) if end_str else file_size - 1
+
+    if start >= file_size or start > end:
+        return Response(
+            status=416,
+            headers={"Content-Range": f"bytes */{file_size}"},
+        )
+
+    end = min(end, file_size - 1)
+    length = end - start + 1
+
+    def generate():
+        with open(video_path, "rb") as f:
+            f.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = f.read(min(8192, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    response = Response(generate(), status=206, mimetype="video/mp4")
+    response.headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+    response.headers["Accept-Ranges"] = "bytes"
+    response.headers["Content-Length"] = str(length)
+    return response
 
 
 def _process_video(job_id, video_path, video_basename):
@@ -376,7 +427,7 @@ def stream_video_by_hash(video_hash):
     if not source_video or not source_video.exists():
         return jsonify({"error": "Video file not found in output directory"}), 404
 
-    return send_file(str(source_video), mimetype="video/mp4")
+    return _stream_video_with_range(source_video)
 
 
 @app.route("/api/upload", methods=["POST"])
@@ -494,7 +545,7 @@ def stream_video(job_id):
     video_path = UPLOAD_FOLDER / filename
     if not video_path.exists():
         return jsonify({"error": "Video file not found on server"}), 404
-    return send_file(str(video_path), mimetype="video/mp4")
+    return _stream_video_with_range(video_path)
 
 
 @app.route("/api/health", methods=["GET"])
