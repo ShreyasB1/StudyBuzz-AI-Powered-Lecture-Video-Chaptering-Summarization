@@ -86,7 +86,10 @@ def _extract_plain_text_from_vtt(content: str) -> str:
 
 def _load_chapter_content(folder_path: str, chapter_path: str) -> str:
     """Load transcript + summary for a chapter from disk."""
-    chapter_dir = os.path.join(folder_path, chapter_path)
+    # chapter_path from DB is "{video_hash}/{chapter_name}", but folder_path already contains video_hash
+    # Extract just the chapter folder name to avoid duplicate hashes in the path
+    chapter_name = chapter_path.split("/", 1)[-1]
+    chapter_dir = os.path.join(folder_path, chapter_name)
 
     parts: list[str] = []
 

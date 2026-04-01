@@ -62,7 +62,8 @@ def _load_chapter_content(folder_path: str, chapter_path: str) -> str:
     The base directory where chapters live is the ``folder_path`` recorded in
     ``lecture_videos``.
     """
-    chapter_dir = os.path.join(folder_path, "chapters", chapter_path.split("/", 1)[-1])
+    chapter_name = chapter_path.split("/", 1)[-1]
+    chapter_dir = os.path.join(folder_path, chapter_name)
 
     parts: list[str] = []
 
