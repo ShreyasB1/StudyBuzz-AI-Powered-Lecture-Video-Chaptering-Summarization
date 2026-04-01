@@ -31,33 +31,12 @@ attributes:
     widget: select
     value: "H200_HGX"
     options:
-      - ['NVIDIA GPU (first avail)', 'nvidia_gpu',
-          data-max-num-gpus: 8,
-          data-min-num-gpus: 1,
-          data-max-bc-num-slots: 1,
-          data-max-num-cores: 16,
-          data-max-num-mem-per-core: 64,
-        ]
-      - ['NVIDIA GPU L40S', 'L40S',
-          data-max-num-gpus: 4,
-          data-min-num-gpus: 1,
-          data-max-bc-num-slots: 1,
-          data-max-num-cores: 16,
-          data-max-num-mem-per-core: 64,
-        ]
-      - ['NVIDIA GPU H100 HGX', 'H100_HGX',
-          data-max-num-gpus: 8,
-          data-min-num-gpus: 1,
-          data-max-bc-num-slots: 1,
-          data-max-num-cores: 16,
-          data-max-num-mem-per-core: 64,
-        ]
       - ['NVIDIA GPU H200 HGX', 'H200_HGX',
           data-max-num-gpus: 8,
           data-min-num-gpus: 1,
           data-max-bc-num-slots: 1,
-          data-max-num-cores: 16,
-          data-max-num-mem-per-core: 64,
+          data-max-num-cores: 64,
+          data-max-num-mem-per-core: 16,
         ]
   bc_num_slots:
     label: "Nodes"
@@ -70,9 +49,9 @@ attributes:
     widget: number_field
     label: "Cores"
     min: 4
-    max: 16
+    max: 64
     step: 1
-    value: 8
+    value: 64
     help: 'Number of CPU cores for the application'
   num_mem_per_core:
     widget: number_field
@@ -80,7 +59,7 @@ attributes:
     min: 8
     max: 64
     step: 4
-    value: 16
+    value: 2
     help: "Memory allocation per core"
   num_gpus:
     label: "GPUs"
