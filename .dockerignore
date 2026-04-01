@@ -13,3 +13,5 @@ template
 install.sh
 Makefile
 README.md
+frontend/node_modules
+frontend/dist

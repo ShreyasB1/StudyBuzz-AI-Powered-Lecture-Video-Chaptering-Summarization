@@ -30,25 +30,40 @@ def generate_vtt(audio_path, host_ip, port, model_name, language):
 
     try:
         with open(audio_path, "rb") as audio_file:
+            # vLLM Whisper only supports "text" and "json" formats.
+            # "verbose_json" with timestamp_granularities is NOT implemented.
             transcription = client.audio.transcriptions.create(
                 model=model_name,
                 file=audio_file,
-                response_format="verbose_json",
-                timestamp_granularities=["segment"],
-                language=language,  # <--- CRITICAL FIX: Explicitly set language
+                response_format="json",
+                language=language,
             )
 
-        print("WEBVTT\n")
-
-        # Extract segments robustly (OpenAI client versions can return dicts or Pydantic models)
+        text_content = None
         segments = []
+
         if isinstance(transcription, dict):
-            segments = transcription.get("segments", [])
-        elif hasattr(transcription, "segments") and transcription.segments:
-            segments = transcription.segments
+            text_content = transcription.get("text")
+            segments = transcription.get("segments") or []
         elif hasattr(transcription, "model_dump"):
             dump = transcription.model_dump()
-            segments = dump.get("segments", [])
+            text_content = dump.get("text")
+            segments = dump.get("segments") or []
+        elif hasattr(transcription, "text"):
+            text_content = transcription.text
+            if hasattr(transcription, "segments") and transcription.segments:
+                segments = transcription.segments
+
+        if not text_content and not segments:
+            text_content = str(transcription) if transcription else ""
+
+        text_content = (text_content or "").strip()
+
+        if not text_content and not segments:
+            print("[CRITICAL ERROR] Whisper returned empty transcription.", file=sys.stderr)
+            sys.exit(1)
+
+        print("WEBVTT\n")
 
         if segments:
             for segment in segments:
@@ -65,20 +80,14 @@ def generate_vtt(audio_path, host_ip, port, model_name, language):
                 vtt_end = format_timestamp(end)
 
                 print(f"{vtt_start} --> {vtt_end}")
-                print(f"{text.strip()}\n")
+                print(f"{(text or '').strip()}\n")
         else:
             print(
-                "[WARNING] Response did not contain segments. The server might not support segment-level timestamps.",
+                "[INFO] Whisper returned plain text (no segment timestamps).",
                 file=sys.stderr,
             )
-            text_content = ""
-            if isinstance(transcription, dict):
-                text_content = transcription.get("text", str(transcription))
-            elif hasattr(transcription, "text"):
-                text_content = transcription.text
-            else:
-                text_content = str(transcription)
-            print(f"00:00:00.000 --> 00:00:00.000\n{text_content.strip()}\n")
+            print(f"00:00:00.000 --> 99:59:59.000")
+            print(f"{text_content}\n")
 
     except Exception as e:
         print(f"\n[CRITICAL ERROR] Could not transcribe.", file=sys.stderr)

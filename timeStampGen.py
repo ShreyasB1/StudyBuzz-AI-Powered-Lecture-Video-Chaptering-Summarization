@@ -140,26 +140,41 @@ async def transcribe_audio_with_whisper(mp3_path: str, output_txt_path: str) -> 
 
     try:
         with open(mp3_path, "rb") as audio_file:
+            # vLLM Whisper only supports "text" and "json" response formats.
+            # "verbose_json" with timestamp_granularities is NOT implemented.
             transcription = await client.audio.transcriptions.create(
                 model=model_name,
                 file=audio_file,
-                response_format="verbose_json",
-                timestamp_granularities=["segment"],
+                response_format="json",
                 language=language,
             )
 
+        text_content = None
+        segments = []
+
+        if isinstance(transcription, dict):
+            text_content = transcription.get("text")
+            segments = transcription.get("segments") or []
+        elif hasattr(transcription, "model_dump"):
+            dump = transcription.model_dump()
+            text_content = dump.get("text")
+            segments = dump.get("segments") or []
+        elif hasattr(transcription, "text"):
+            text_content = transcription.text
+            if hasattr(transcription, "segments") and transcription.segments:
+                segments = transcription.segments
+
+        if not text_content and not segments:
+            text_content = str(transcription) if transcription else ""
+
+        text_content = (text_content or "").strip()
+
+        if not text_content and not segments:
+            print("Error: Whisper returned empty transcription.")
+            return False
+
         with open(output_txt_path, "w", encoding="utf-8") as f:
             f.write("WEBVTT\n\n")
-
-            # Extract segments robustly (OpenAI client versions can return dicts or Pydantic models)
-            segments = []
-            if isinstance(transcription, dict):
-                segments = transcription.get("segments", [])
-            elif hasattr(transcription, "segments") and transcription.segments:
-                segments = transcription.segments
-            elif hasattr(transcription, "model_dump"):
-                dump = transcription.model_dump()
-                segments = dump.get("segments", [])
 
             if segments:
                 for segment in segments:
@@ -174,23 +189,16 @@ async def transcribe_audio_with_whisper(mp3_path: str, output_txt_path: str) -> 
 
                     vtt_start = format_timestamp(start)
                     vtt_end = format_timestamp(end)
-
                     f.write(f"{vtt_start} --> {vtt_end}\n")
-                    f.write(f"{text.strip()}\n\n")
+                    f.write(f"{(text or '').strip()}\n\n")
             else:
                 print(
-                    "Warning: Response did not contain segments. The server might not support segment-level timestamps."
+                    "Note: Whisper returned plain text (no segment timestamps). "
+                    "Writing full transcript as a single VTT entry."
                 )
-                text_content = ""
-                if isinstance(transcription, dict):
-                    text_content = transcription.get("text", str(transcription))
-                elif hasattr(transcription, "text"):
-                    text_content = transcription.text
-                else:
-                    text_content = str(transcription)
-                f.write(f"00:00:00.000 --> 00:00:00.000\n{text_content.strip()}\n")
+                f.write(f"00:00:00.000 --> 99:59:59.000\n{text_content}\n\n")
 
-        print("Transcription successful!")
+        print(f"Transcription successful! ({len(text_content)} chars)")
         return True
 
     except Exception as e:
@@ -322,6 +330,16 @@ def split_transcript_by_timestamps(
 
     print(f"Parsed {len(vtt_entries)} transcript entries.")
 
+    # If Whisper returned a single unsegmented block (no per-segment timestamps),
+    # give every chapter the full transcript so the LLM can summarize from it.
+    single_block_mode = len(vtt_entries) == 1 and len(timestamps) > 1
+
+    if single_block_mode:
+        print(
+            "Note: Transcript has no segment-level timestamps. "
+            "Full text will be included in each chapter for LLM context."
+        )
+
     # 4. Create output directory.
     os.makedirs(output_dir, exist_ok=True)
 
@@ -336,12 +354,15 @@ def split_transcript_by_timestamps(
             # Last chapter extends to the end
             end_time = float("inf")
 
-        # Filter VTT entries for this chapter
-        chapter_entries = [
-            entry
-            for entry in vtt_entries
-            if entry["start"] >= start_time and entry["start"] < end_time
-        ]
+        if single_block_mode:
+            chapter_entries = vtt_entries
+        else:
+            # Filter VTT entries for this chapter
+            chapter_entries = [
+                entry
+                for entry in vtt_entries
+                if entry["start"] >= start_time and entry["start"] < end_time
+            ]
 
         # Create safe filename and chapter folder
         safe_title = _sanitize_title(timestamp["title"])
