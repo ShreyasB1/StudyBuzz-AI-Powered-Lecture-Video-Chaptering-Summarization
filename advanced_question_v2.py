@@ -36,6 +36,21 @@ LLM_MODEL = "mistral-large"
 TOP_K_PER_QUERY = 3  # results per sub-query (kept small to avoid flooding)
 MAX_SUB_QUERIES = 5  # cap on sub-queries the planner can emit
 MIN_SIMILARITY = float(os.getenv("RAG_MIN_SIMILARITY", "0.25"))
+VERBOSE_TRACE = os.getenv("RAG_VERBOSE_TRACE", "1").lower() not in {"0", "false", "no"}
+
+
+def _trace(message: str) -> None:
+    if VERBOSE_TRACE:
+        print(message)
+
+
+def _trace_block(title: str, content: str) -> None:
+    if not VERBOSE_TRACE:
+        return
+    print(title)
+    print("-" * len(title))
+    print(content)
+    print("-" * len(title))
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +90,8 @@ def _load_chapter_content(folder_path: str, chapter_path: str) -> str:
 
     parts: list[str] = []
 
+    _trace(f"  [File] chapter_dir={chapter_dir}")
+
     summary_path = os.path.join(chapter_dir, "summary.json")
     print(f"  Attempting to read summary: {summary_path}")
     if os.path.exists(summary_path):
@@ -87,6 +104,7 @@ def _load_chapter_content(folder_path: str, chapter_path: str) -> str:
             with open(summary_path, "r", encoding="utf-8") as f:
                 summary_data = json.load(f)
             print(f"    Summary loaded with {len(summary_data)} entries")
+            _trace_block(f"    [File Contents] {summary_path}", json.dumps(summary_data, indent=2, ensure_ascii=False))
             for title, summary_text in summary_data.items():
                 parts.append(f"Chapter: {title}\nSummary: {summary_text}")
         except Exception as e:
@@ -105,6 +123,7 @@ def _load_chapter_content(folder_path: str, chapter_path: str) -> str:
         try:
             with open(transcript_path, "r", encoding="utf-8") as f:
                 raw = f.read()
+            _trace_block(f"    [File Contents] {transcript_path}", raw)
             plain = _extract_plain_text_from_vtt(raw)
             print(f"    Transcript plain-text length: {len(plain)} chars")
             if plain:
@@ -128,15 +147,22 @@ def _load_chapter_content(folder_path: str, chapter_path: str) -> str:
 # ---------------------------------------------------------------------------
 async def ask_llm(messages: list[dict]) -> str:
     """Send a chat-completion request to the local Mistral LLM."""
+    _trace("\n[LLM] Sending chat completion request")
+    for idx, message in enumerate(messages, 1):
+        role = message.get("role", "unknown")
+        content = message.get("content", "")
+        _trace_block(f"[LLM Request] Message {idx} role={role}", content)
     client = openai.AsyncOpenAI(base_url=LLM_BASE_URL, api_key="empty")
     response = await client.chat.completions.create(model=LLM_MODEL, messages=messages)
     raw = response.choices[0].message.content or ""
+    _trace_block("[LLM Response] Raw model output", raw)
     return _strip_think_tags(raw)
 
 
 async def search_top_k(query: str, limit: int = 5) -> list[dict]:
     """Return the top-k chapter matches with metadata + on-disk content."""
     print(f"  [Search] Embedding query: '{query[:120]}'")
+    _trace_block("  [Search Query] Full query", query)
     client = openai.AsyncOpenAI(base_url=EMBED_BASE_URL, api_key="empty")
     response = await client.embeddings.create(model=EMBED_MODEL, input=query)
     query_vector = response.data[0].embedding
@@ -169,6 +195,10 @@ async def search_top_k(query: str, limit: int = 5) -> list[dict]:
             f"    [Search:{idx}] video='{video_name}' chapter='{chapter_path}' sim={similarity:.4f}"
         )
         content = _load_chapter_content(folder_path, chapter_path)
+        _trace_block(
+            f"    [Search Result Content] {video_name} :: {chapter_path}",
+            content,
+        )
         results.append(
             {
                 "video_name": video_name,
@@ -190,6 +220,7 @@ async def plan_queries(question: str) -> list[str]:
     Returns a list of search strings (1–MAX_SUB_QUERIES items).
     """
     print("🔍 Planning search queries...")
+    _trace_block("[Planner] User question", question)
     messages = [
         {
             "role": "system",
@@ -222,6 +253,7 @@ async def plan_queries(question: str) -> list[str]:
     ]
 
     raw = await ask_llm(messages)
+    _trace_block("[Planner] Raw planner response before JSON parse", raw)
 
     # Robust JSON extraction: handle markdown code fences, stray text, etc.
     text = raw.strip()
@@ -238,6 +270,7 @@ async def plan_queries(question: str) -> list[str]:
             print(f"   Planned {len(queries)} sub-queries:")
             for i, q in enumerate(queries, 1):
                 print(f"   {i}. {q}")
+            _trace_block("[Planner] Parsed sub-queries", json.dumps(queries, indent=2, ensure_ascii=False))
             return queries
     except json.JSONDecodeError:
         pass
@@ -251,6 +284,7 @@ async def multi_search(queries: list[str], top_k: int = TOP_K_PER_QUERY) -> list
     """Run all sub-queries concurrently, deduplicate by chapter_path, aggregate queries,
     and keep the best similarity score."""
     print(f"\n📚 Searching {len(queries)} sub-queries (top-{top_k} each)...")
+    _trace_block("[Search] Planned sub-queries", json.dumps(queries, indent=2, ensure_ascii=False))
 
     search_results = await asyncio.gather(
         *[search_top_k(q, limit=top_k) for q in queries]
@@ -259,6 +293,20 @@ async def multi_search(queries: list[str], top_k: int = TOP_K_PER_QUERY) -> list
     for idx, batch in enumerate(search_results, 1):
         sims = ", ".join(f"{r['similarity']:.4f}" for r in batch)
         print(f"   Sub-query {idx} returned {len(batch)} rows (sims: [{sims}])")
+        for row in batch:
+            _trace_block(
+                f"   [Search Row] {row['video_name']} :: {row['chapter_path']}",
+                json.dumps(
+                    {
+                        "video_name": row.get("video_name"),
+                        "chapter_path": row.get("chapter_path"),
+                        "similarity": row.get("similarity"),
+                        "matched_queries": row.get("matched_queries", []),
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                ),
+            )
 
     seen: dict[str, dict] = {}
     for batch_idx, batch in enumerate(search_results):
@@ -289,9 +337,41 @@ async def multi_search(queries: list[str], top_k: int = TOP_K_PER_QUERY) -> list
 
     # If the threshold filtered everything, keep best candidates so we can still answer.
     if filtered:
+        _trace_block(
+            "[Search] Filtered deduped results",
+            json.dumps(
+                [
+                    {
+                        "video_name": r.get("video_name"),
+                        "chapter_path": r.get("chapter_path"),
+                        "similarity": r.get("similarity"),
+                        "matched_queries": r.get("matched_queries", []),
+                    }
+                    for r in filtered
+                ],
+                indent=2,
+                ensure_ascii=False,
+            ),
+        )
         return filtered
 
     print("   Similarity filter removed all chapters; falling back to top deduped results.")
+    _trace_block(
+        "[Search] Deduped fallback results",
+        json.dumps(
+            [
+                {
+                    "video_name": r.get("video_name"),
+                    "chapter_path": r.get("chapter_path"),
+                    "similarity": r.get("similarity"),
+                    "matched_queries": r.get("matched_queries", []),
+                }
+                for r in deduped
+            ],
+            indent=2,
+            ensure_ascii=False,
+        ),
+    )
     return deduped
 
 
@@ -308,6 +388,21 @@ async def extract_all(question: str, results: list[dict]) -> list[str]:
             f"(sim {result['similarity']:.4f}, triggers: [{log_queries}])"
         )
         print(f"  ↳ Context length for source {i}: {len(result['content'])} chars")
+        _trace_block(
+            f"[Extract] Source {i} metadata",
+            json.dumps(
+                {
+                    "video_name": result.get("video_name"),
+                    "chapter_path": result.get("chapter_path"),
+                    "similarity": result.get("similarity"),
+                    "matched_queries": result.get("matched_queries", []),
+                    "content_length": len(result.get("content", "")),
+                },
+                indent=2,
+                ensure_ascii=False,
+            ),
+        )
+        _trace_block(f"[Extract] Source {i} content", result.get("content", ""))
 
         messages = [
             {
@@ -342,6 +437,7 @@ async def extract_all(question: str, results: list[dict]) -> list[str]:
             else:
                 preview = extraction.replace("\n", " ")[:180]
                 print(f"  ↳ [{i}] Extraction preview: {preview}")
+            _trace_block(f"[Extract] Source {i} final extraction", extraction)
             return (
                 i,
                 f"Source {i} ({result['video_name']} – {result['chapter_path']}):\n"
@@ -370,6 +466,7 @@ async def synthesize(question: str, extractions: list[str]) -> str:
         f"fallback_sources={fallback_count}, useful_sources={len(extractions) - fallback_count}"
     )
     combined_context = "\n\n".join(extractions)
+    _trace_block("[Synthesis] Combined extraction context", combined_context)
 
     messages = [
         {
@@ -392,7 +489,9 @@ async def synthesize(question: str, extractions: list[str]) -> str:
         },
     ]
 
-    return await ask_llm(messages)
+    final_answer = await ask_llm(messages)
+    _trace_block("[Synthesis] Final answer", final_answer)
+    return final_answer
 
 
 # ---------------------------------------------------------------------------
@@ -544,6 +643,7 @@ if __name__ == "__main__":
     print("=" * 60)
     print("Agentic RAG Pipeline")
     print("=" * 60)
+    print(f"Verbose trace enabled: {VERBOSE_TRACE}")
     answer = asyncio.run(agentic_answer(args.query, top_k=args.top_k))
     print("=" * 60)
     print("\nFinal Answer:\n")
