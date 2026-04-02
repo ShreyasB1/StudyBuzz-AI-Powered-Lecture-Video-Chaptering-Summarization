@@ -479,8 +479,10 @@ async def synthesize(question: str, extractions: list[str]) -> str:
                 "from several lecture video chapters that are relevant to the "
                 "user's question. Use this information to provide a comprehensive, "
                 "well-organized answer. Cite the source number when referencing "
-                "specific information (e.g. [Source 1]). If the extracted "
-                "information does not answer the question, say so."
+                "specific information (e.g. [Source 1]). Use GitHub-flavored "
+                "markdown for any tables, and use $...$ for inline math or $$...$$ "
+                "for display math so the web UI can render them correctly. If the "
+                "extracted information does not answer the question, say so."
             ),
         },
         {

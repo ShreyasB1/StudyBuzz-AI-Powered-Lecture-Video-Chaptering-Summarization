@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import { createChatStream } from '../services/api';
@@ -217,7 +218,7 @@ export default function ChatPanel() {
                 {m.role === 'assistant' ? (
                   m.content ? (
                     <div className="message-content message-markdown">
-                      <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]} components={markdownComponents}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} components={markdownComponents}>
                         {m.content}
                       </ReactMarkdown>
                     </div>

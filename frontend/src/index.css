@@ -574,6 +574,39 @@ body {
   margin: 0;
 }
 
+.message-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 0.9rem;
+  display: block;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.message-markdown thead {
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.message-markdown th,
+.message-markdown td {
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  padding: 0.55rem 0.7rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.message-markdown th {
+  font-weight: 700;
+}
+
+.message-markdown tbody tr:nth-child(even) {
+  background: rgba(15, 23, 42, 0.03);
+}
+
+.message-markdown tbody tr:hover {
+  background: rgba(37, 99, 235, 0.05);
+}
+
 .markdown-link {
   color: var(--primary-dark);
   text-decoration: underline;
